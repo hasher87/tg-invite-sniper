@@ -1,0 +1,14 @@
+# Environment files
+.env
+*.env
+
+# Session files
+*.session
+
+# Databases
+*.db
+*.sqlite
+
+# Python cache
+__pycache__/
+*.py[cod]
