@@ -25,25 +25,25 @@ async def main():
     phone = input("Enter your phone number (international format): ")
     target_chat = input("Enter target channel ID (with or without -100 prefix): ")
     
-    # Convert channel ID
-    if target_chat.startswith('-100'):
-        target_chat = int(target_chat.replace('-100', ''))
-    else:
-        target_chat = int(target_chat)
-
+    # Remove the ID conversion logic and use string directly
+    target_chat = target_chat.strip()  # Keep as string
+    
     client = TelegramClient('sniper_session', API_ID, API_HASH)
     await client.start(phone)
     
     try:
-        # Verify channel connection
-        entity = await client.get_entity(target_chat)
+        # Use get_input_entity instead of get_entity
+        entity = await client.get_input_entity(target_chat)
         print(f"\nSuccessfully connected to channel:")
         print(f"Title: {entity.title}")
         print(f"ID: {entity.id}")
-        print(f"Username: {entity.username or 'Private channel'}\n")
         
     except Exception as e:
         print(f"Error connecting to channel: {str(e)}")
+        print("Make sure:")
+        print("1. You're using the correct channel ID/username")
+        print("2. You have joined the channel")
+        print("3. The channel exists and is accessible")
         await client.disconnect()
         return
     
