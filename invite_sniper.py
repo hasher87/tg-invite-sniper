@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from telethon import TelegramClient, events
 import sqlite3
 from telethon.errors import InviteHashExpiredError
+from telethon.tl.functions.channels import JoinChannelRequest
 
 # Load environment variables
 load_dotenv()
@@ -74,7 +75,9 @@ async def main():
                         
                         # Attempt to join
                         try:
-                            await client.join_chat(link)
+                            await client(JoinChannelRequest(
+                                channel=link  # Works with both public links and private hashes
+                            ))
                             status = 'joined'
                         except InviteHashExpiredError:
                             status = 'expired'
