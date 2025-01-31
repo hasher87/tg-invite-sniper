@@ -13,10 +13,6 @@ load_dotenv()
 # Telegram API credentials
 API_ID = int(os.getenv('API_ID'))
 API_HASH = os.getenv('API_HASH')
-PHONE_NUMBER = '+6737187174'
-
-# Target channel to monitor
-TARGET_CHAT = -1002067695602  # Your channel ID without -100 prefix
 
 # Invite link pattern
 INVITE_PATTERN = re.compile(
@@ -25,11 +21,31 @@ INVITE_PATTERN = re.compile(
 )
 
 async def main():
-    client = TelegramClient('sniper_session', API_ID, API_HASH)
-    await client.start(PHONE_NUMBER)
+    # Get user input
+    phone = input("Enter your phone number (international format): ")
+    target_chat = input("Enter target channel ID (with or without -100 prefix): ")
     
-    # Connect to monitoring channel
-    entity = await client.get_input_entity(TARGET_CHAT)
+    # Convert channel ID
+    if target_chat.startswith('-100'):
+        target_chat = int(target_chat.replace('-100', ''))
+    else:
+        target_chat = int(target_chat)
+
+    client = TelegramClient('sniper_session', API_ID, API_HASH)
+    await client.start(phone)
+    
+    try:
+        # Verify channel connection
+        entity = await client.get_entity(target_chat)
+        print(f"\nSuccessfully connected to channel:")
+        print(f"Title: {entity.title}")
+        print(f"ID: {entity.id}")
+        print(f"Username: {entity.username or 'Private channel'}\n")
+        
+    except Exception as e:
+        print(f"Error connecting to channel: {str(e)}")
+        await client.disconnect()
+        return
     
     # Create database for tracking invites
     conn = sqlite3.connect('invite_links.db')
