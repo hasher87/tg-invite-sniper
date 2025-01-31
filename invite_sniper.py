@@ -17,7 +17,7 @@ API_HASH = os.getenv('API_HASH')
 
 # Invite link pattern
 INVITE_PATTERN = re.compile(
-    r'(https?://)?(t\.me/|telegram\.me/joinchat/)\S+',
+    r'(?:https?://)?(?:t\.me/|telegram\.(?:me|dog)/joinchat/)(\+?[\w-]+)',
     re.IGNORECASE
 )
 
@@ -64,9 +64,10 @@ async def main():
     async def handler(event):
         try:
             text = event.message.text
-            if matches := INVITE_PATTERN.findall(text):
+            if matches := INVITE_PATTERN.finditer(text):
                 for match in matches:
-                    link = ''.join(match).strip()
+                    invite_hash = match.group(1)
+                    link = f"https://t.me/{invite_hash}"
                     
                     # Check if link is new
                     c.execute('SELECT * FROM invites WHERE link = ?', (link,))
