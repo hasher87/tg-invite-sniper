@@ -32,11 +32,14 @@ async def main():
     await client.start(phone)
     
     try:
-        # Use get_input_entity instead of get_entity
-        entity = await client.get_input_entity(target_chat)
+        # Get full entity details
+        input_entity = await client.get_input_entity(target_chat)
+        full_entity = await client.get_entity(input_entity)
+        
         print(f"\nSuccessfully connected to channel:")
-        print(f"Title: {entity.title}")
-        print(f"ID: {entity.id}")
+        print(f"Title: {full_entity.title}")
+        print(f"ID: {full_entity.id}")
+        print(f"Username: @{full_entity.username}" if full_entity.username else "Private channel")
         
     except Exception as e:
         print(f"Error connecting to channel: {str(e)}")
@@ -56,7 +59,7 @@ async def main():
                   status TEXT)''')
     conn.commit()
 
-    @client.on(events.NewMessage(chats=entity))
+    @client.on(events.NewMessage(chats=input_entity))
     async def handler(event):
         try:
             text = event.message.text
