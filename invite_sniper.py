@@ -7,6 +7,7 @@ from telethon import TelegramClient, events
 import sqlite3
 from telethon.errors import InviteHashExpiredError
 from telethon.tl.functions.channels import JoinChannelRequest
+from telethon.tl.functions.messages import ImportChatInviteRequest
 
 # Load environment variables
 load_dotenv()
@@ -17,7 +18,7 @@ API_HASH = os.getenv('API_HASH')
 
 # Invite link pattern
 INVITE_PATTERN = re.compile(
-    r'(?:https?://)?(?:t\.me/|telegram\.(?:me|dog)/joinchat/)(\+?[\w-]+)',
+    r'(?:https?://)?t\.me/\+(?P<hash>\w+)',  # Capture hash after t.me/+
     re.IGNORECASE
 )
 
@@ -66,27 +67,25 @@ async def main():
             text = event.message.text
             if matches := INVITE_PATTERN.finditer(text):
                 for match in matches:
-                    invite_hash = match.group(1)
-                    link = f"https://t.me/{invite_hash}"
+                    invite_hash = match.group('hash')
+                    link = f"https://t.me/+{invite_hash}"
                     
                     # Check if link is new
                     c.execute('SELECT * FROM invites WHERE link = ?', (link,))
                     if not c.fetchone():
-                        print(f"New invite detected: {link}")
+                        print(f"New private invite detected: {link}")
                         
-                        # Attempt to join
                         try:
-                            await client(JoinChannelRequest(
-                                channel=link  # Works with both public links and private hashes
+                            # Use ImportChatInviteRequest for private links
+                            await client(ImportChatInviteRequest(
+                                hash=invite_hash
                             ))
                             status = 'joined'
                         except InviteHashExpiredError:
                             status = 'expired'
-                            print(f"Expired link: {link}")
                         except Exception as e:
                             status = f'error: {str(e)}'
-                            print(f"Failed to join {link}: {str(e)}")
-                            
+                        
                         # Store in database
                         c.execute('''INSERT INTO invites 
                                    VALUES (?, ?, ?)''',
