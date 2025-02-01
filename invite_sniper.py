@@ -81,10 +81,20 @@ async def main():
                                 hash=invite_hash
                             ))
                             status = 'joined'
+                            print(f"✅ Successfully joined: {link}")
                         except InviteHashExpiredError:
                             status = 'expired'
+                            print(f"❌ Expired link: {link}")
+                        except ValueError as ve:
+                            if "A wait of" in str(ve):
+                                status = 'already member'
+                                print(f"ℹ️ Already in group: {link}")
+                            else:
+                                status = f'error: {str(ve)}'
+                                print(f"⚠️ Error joining {link}: {str(ve)}")
                         except Exception as e:
                             status = f'error: {str(e)}'
+                            print(f"⚠️ Failed to join {link}: {str(e)}")
                         
                         # Store in database
                         c.execute('''INSERT INTO invites 
