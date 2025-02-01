@@ -18,7 +18,7 @@ API_HASH = os.getenv('API_HASH')
 
 # Invite link pattern
 INVITE_PATTERN = re.compile(
-    r'(?:https?://)?t\.me/\+(?P<hash>\w+)',  # Capture hash after t.me/+
+    r'(?:https?://)?t\.me/\+([\w-]+)',  # Include hyphen in matching
     re.IGNORECASE
 )
 
@@ -67,7 +67,7 @@ async def main():
             text = event.message.text
             if matches := INVITE_PATTERN.finditer(text):
                 for match in matches:
-                    invite_hash = match.group('hash')
+                    invite_hash = match.group(1)
                     link = f"https://t.me/+{invite_hash}"
                     
                     # Check if link is new
