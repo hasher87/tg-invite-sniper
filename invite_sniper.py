@@ -27,24 +27,35 @@ INVITE_PATTERN = re.compile(
 
 async def main():
     # Get user input
-    phone = input("Enter your phone number (international format): ")
-    target_chat = input("Enter target channel ID (with or without -100 prefix): ")
+    phone = input("Enter your phone number (international format): ").strip().replace(' ', '')
+    target_chat = input("Enter target channel ID (with or without -100 prefix): ").strip()
     
-    # Remove the ID conversion logic and use string directly
-    target_chat = target_chat.strip()  # Keep as string
-    
+    # Configure client with more reliable settings
     client = TelegramClient(
         'sniper_session', 
         API_ID, 
         API_HASH,
-        connection=ConnectionTcpAbridged,  # Use the connection class directly
-        connection_retries=0,  # Updated parameter name
-        auto_reconnect=False,
-        request_retries=0,
-        flood_sleep_threshold=0,
-        workers=20
+        connection=ConnectionTcpAbridged,
+        connection_retries=3,  # Allow some retries
+        request_retries=2,
+        flood_sleep_threshold=1,  # Small wait for flood prevention
+        device_model="InviteSniper v2",
+        app_version="3.0.0"
     )
-    await client.start(phone)
+    
+    try:
+        # Start client with proper parameters
+        await client.start(
+            phone,
+            max_attempts=3
+        )
+    except Exception as e:
+        print(f"{Fore.RED}🚨 Connection failed: {str(e)}{Style.RESET_ALL}")
+        print("Please verify:")
+        print("1. Your phone number format (+CountryCodeNumber)")
+        print("2. API_ID/API_HASH in .env file")
+        print("3. Internet connection")
+        return
     
     try:
         # Get full entity details
