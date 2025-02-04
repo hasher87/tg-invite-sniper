@@ -4,10 +4,11 @@ import asyncio
 from datetime import datetime
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
-import sqlite3
+import aiosqlite
 from telethon.errors import InviteHashExpiredError
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest
+from colorama import Fore, Style
 
 # Load environment variables
 load_dotenv()
@@ -52,60 +53,61 @@ async def main():
         await client.disconnect()
         return
     
-    # Create database for tracking invites
-    conn = sqlite3.connect('invite_links.db')
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS invites
-                 (link TEXT PRIMARY KEY,
-                  date TEXT,
-                  status TEXT)''')
-    conn.commit()
+    # Replace SQLite connection with async version
+    conn = await aiosqlite.connect('invite_links.db')
+    c = await conn.cursor()
+    await c.execute('''CREATE TABLE IF NOT EXISTS invites
+             (link TEXT PRIMARY KEY,
+              date TEXT,
+              status TEXT)''')
+    await conn.commit()
 
     @client.on(events.NewMessage(chats=input_entity))
     async def handler(event):
         try:
+            detection_time = datetime.now().timestamp() * 1000  # Milliseconds
             text = event.message.text
             if matches := INVITE_PATTERN.finditer(text):
                 for match in matches:
                     invite_hash = match.group(1)
                     link = f"https://t.me/+{invite_hash}"
                     
-                    # Check if link is new
-                    c.execute('SELECT * FROM invites WHERE link = ?', (link,))
-                    if not c.fetchone():
-                        print(f"New private invite detected: {link}")
+                    # Async database check
+                    await c.execute('SELECT * FROM invites WHERE link = ?', (link,))
+                    if not await c.fetchone():
+                        detect_latency = datetime.now().timestamp() * 1000 - detection_time
+                        print(f"{Fore.CYAN}⌛ Detection: {detect_latency:.2f}ms{Style.RESET_ALL}")
                         
+                        join_start = datetime.now().timestamp() * 1000
                         try:
-                            # Use ImportChatInviteRequest for private links
-                            await client(ImportChatInviteRequest(
-                                hash=invite_hash
-                            ))
+                            await client(ImportChatInviteRequest(hash=invite_hash))
+                            join_time = datetime.now().timestamp() * 1000 - join_start
                             status = 'joined'
-                            print(f"✅ Successfully joined: {link}")
+                            print(f"{Fore.GREEN}✅ Joined in {join_time:.2f}ms{Style.RESET_ALL} | Total: {detect_latency + join_time:.2f}ms | {link}")
                         except InviteHashExpiredError:
                             status = 'expired'
-                            print(f"❌ Expired link: {link}")
+                            print(f"{Fore.RED}❌ Expired link: {link}{Style.RESET_ALL}")
                         except ValueError as ve:
                             if "A wait of" in str(ve):
                                 status = 'already member'
-                                print(f"ℹ️ Already in group: {link}")
+                                print(f"{Fore.YELLOW}ℹ️ Already in group: {link}{Style.RESET_ALL}")
                             else:
                                 status = f'error: {str(ve)}'
-                                print(f"⚠️ Error joining {link}: {str(ve)}")
+                                print(f"{Fore.RED}⚠️ Error joining {link}: {str(ve)}{Style.RESET_ALL}")
                         except Exception as e:
-                            status = f'error: {str(e)}'
-                            print(f"⚠️ Failed to join {link}: {str(e)}")
+                            join_time = datetime.now().timestamp() * 1000 - join_start
+                            print(f"{Fore.RED}⚠️ Failed in {join_time:.2f}ms{Style.RESET_ALL} | {str(e)}")
                         
-                        # Store in database
-                        c.execute('''INSERT INTO invites 
-                                   VALUES (?, ?, ?)''',
-                                (link, 
-                                 datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                                 status))
-                        conn.commit()
+                        # Batch insert operations
+                        await c.execute('''INSERT OR IGNORE INTO invites 
+                                       VALUES (?, ?, ?)''',
+                                    (link, 
+                                     datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                                     status))
+                        await conn.commit()
         
         except Exception as e:
-            print(f"Error processing message: {str(e)}")
+            print(f"{Fore.RED}🚨 Critical error: {str(e)}{Style.RESET_ALL}")
 
     print("Invite sniper is actively monitoring...")
     await client.run_until_disconnected()
