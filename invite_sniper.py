@@ -9,7 +9,7 @@ from telethon.errors import InviteHashExpiredError
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest
 from colorama import Fore, Style
-from telethon.network import ConnectionMode  # Add for faster connection
+from telethon.network.connection import ConnectionTcpAbridged
 import time
 
 # Load environment variables
@@ -37,12 +37,12 @@ async def main():
         'sniper_session', 
         API_ID, 
         API_HASH,
-        connection=ConnectionMode.TCP_ABRIDGED,  # Faster connection mode
-        connection_retries=None,  # Disable built-in retries
-        auto_reconnect=False,  # Manual reconnect handling
-        request_retries=0,  # Disable request retries
-        flood_sleep_threshold=0,  # Disable flood wait
-        workers=20  # More workers for parallel processing
+        connection=ConnectionTcpAbridged,  # Use the connection class directly
+        connection_retries=0,  # Updated parameter name
+        auto_reconnect=False,
+        request_retries=0,
+        flood_sleep_threshold=0,
+        workers=20
     )
     await client.start(phone)
     
