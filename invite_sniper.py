@@ -9,6 +9,8 @@ from telethon.errors import InviteHashExpiredError
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest
 from colorama import Fore, Style
+from telethon.network import ConnectionMode  # Add for faster connection
+import time
 
 # Load environment variables
 load_dotenv()
@@ -31,7 +33,17 @@ async def main():
     # Remove the ID conversion logic and use string directly
     target_chat = target_chat.strip()  # Keep as string
     
-    client = TelegramClient('sniper_session', API_ID, API_HASH)
+    client = TelegramClient(
+        'sniper_session', 
+        API_ID, 
+        API_HASH,
+        connection=ConnectionMode.TCP_ABRIDGED,  # Faster connection mode
+        connection_retries=None,  # Disable built-in retries
+        auto_reconnect=False,  # Manual reconnect handling
+        request_retries=0,  # Disable request retries
+        flood_sleep_threshold=0,  # Disable flood wait
+        workers=20  # More workers for parallel processing
+    )
     await client.start(phone)
     
     try:
@@ -62,52 +74,87 @@ async def main():
               status TEXT)''')
     await conn.commit()
 
+    # Preload existing links to memory
+    await c.execute('SELECT link FROM invites')
+    existing_links = {row[0] async for row in c}
+    
     @client.on(events.NewMessage(chats=input_entity))
     async def handler(event):
         try:
-            detection_time = datetime.now().timestamp() * 1000  # Milliseconds
+            detection_time = time.perf_counter()  # More precise timing
             text = event.message.text
+            
             if matches := INVITE_PATTERN.finditer(text):
-                for match in matches:
-                    invite_hash = match.group(1)
-                    link = f"https://t.me/+{invite_hash}"
-                    
-                    # Async database check
-                    await c.execute('SELECT * FROM invites WHERE link = ?', (link,))
-                    if not await c.fetchone():
-                        detect_latency = datetime.now().timestamp() * 1000 - detection_time
-                        print(f"{Fore.CYAN}⌛ Detection: {detect_latency:.2f}ms{Style.RESET_ALL}")
-                        
-                        join_start = datetime.now().timestamp() * 1000
-                        try:
-                            await client(ImportChatInviteRequest(hash=invite_hash))
-                            join_time = datetime.now().timestamp() * 1000 - join_start
-                            status = 'joined'
-                            print(f"{Fore.GREEN}✅ Joined in {join_time:.2f}ms{Style.RESET_ALL} | Total: {detect_latency + join_time:.2f}ms | {link}")
-                        except InviteHashExpiredError:
-                            status = 'expired'
-                            print(f"{Fore.RED}❌ Expired link: {link}{Style.RESET_ALL}")
-                        except ValueError as ve:
-                            if "A wait of" in str(ve):
-                                status = 'already member'
-                                print(f"{Fore.YELLOW}ℹ️ Already in group: {link}{Style.RESET_ALL}")
-                            else:
-                                status = f'error: {str(ve)}'
-                                print(f"{Fore.RED}⚠️ Error joining {link}: {str(ve)}{Style.RESET_ALL}")
-                        except Exception as e:
-                            join_time = datetime.now().timestamp() * 1000 - join_start
-                            print(f"{Fore.RED}⚠️ Failed in {join_time:.2f}ms{Style.RESET_ALL} | {str(e)}")
-                        
-                        # Batch insert operations
-                        await c.execute('''INSERT OR IGNORE INTO invites 
-                                       VALUES (?, ?, ?)''',
-                                    (link, 
-                                     datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                                     status))
-                        await conn.commit()
-        
+                # Process matches concurrently
+                await asyncio.gather(*[
+                    process_invite(match, detection_time, existing_links)
+                    for match in matches
+                ])
+    
         except Exception as e:
             print(f"{Fore.RED}🚨 Critical error: {str(e)}{Style.RESET_ALL}")
+
+    async def process_invite(match, detection_time, cache):
+        invite_hash = match.group(1)
+        link = f"https://t.me/+{invite_hash}"
+        
+        if link in cache:
+            return
+            
+        detect_latency = (time.perf_counter() - detection_time) * 1000
+        print(f"{Fore.CYAN}⌛ Detection: {detect_latency:.2f}ms{Style.RESET_ALL}")
+        
+        join_start = time.perf_counter()
+        try:
+            # Use bare send instead of full request method
+            await client._sender.send(ImportChatInviteRequest(invite_hash))
+            join_time = (time.perf_counter() - join_start) * 1000
+            print(f"{Fore.GREEN}✅ Joined in {join_time:.2f}ms{Style.RESET_ALL} | {link}")
+            cache.add(link)
+            
+            # Queue write operation instead of immediate commit
+            asyncio.create_task(queue_write(link, 'joined'))
+            
+        except InviteHashExpiredError:
+            status = 'expired'
+            print(f"{Fore.RED}❌ Expired link: {link}{Style.RESET_ALL}")
+            asyncio.create_task(queue_write(link, status))
+        except ValueError as ve:
+            if "A wait of" in str(ve):
+                status = 'already member'
+                print(f"{Fore.YELLOW}ℹ️ Already in group: {link}{Style.RESET_ALL}")
+                asyncio.create_task(queue_write(link, status))
+            else:
+                status = f'error: {str(ve)}'
+                print(f"{Fore.RED}⚠️ Error joining {link}: {str(ve)}{Style.RESET_ALL}")
+                asyncio.create_task(queue_write(link, status))
+        except Exception as e:
+            join_time = (time.perf_counter() - join_start) * 1000
+            print(f"{Fore.RED}⚠️ Failed in {join_time:.2f}ms{Style.RESET_ALL} | {str(e)}")
+            asyncio.create_task(queue_write(link, status))
+
+    # Batch write queue system
+    write_queue = []
+    async def queue_write(link, status):
+        write_queue.append((
+            link,
+            datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            status
+        ))
+        
+        if len(write_queue) >= 5:  # Batch every 5 entries
+            await bulk_write()
+    
+    async def bulk_write():
+        nonlocal write_queue
+        try:
+            await c.executemany(
+                '''INSERT OR IGNORE INTO invites VALUES (?, ?, ?)''',
+                write_queue
+            )
+            await conn.commit()
+        finally:
+            write_queue = []
 
     print("Invite sniper is actively monitoring...")
     await client.run_until_disconnected()
