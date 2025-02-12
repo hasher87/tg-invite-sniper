@@ -4,13 +4,13 @@ import asyncio
 from datetime import datetime
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
-import aiosqlite
 from telethon.errors import InviteHashExpiredError
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest
 from colorama import Fore, Style
-from telethon.network.connection import ConnectionTcpAbridged, ConnectionTcpFull
+from telethon.network.connection import ConnectionTcpAbridged
 import time
+from collections import OrderedDict
 
 # Load environment variables
 load_dotenv()
@@ -19,38 +19,68 @@ load_dotenv()
 API_ID = int(os.getenv('API_ID'))
 API_HASH = os.getenv('API_HASH')
 
-# Regex pattern to detect Telegram invite links in messages
-# Matches both http and non-http URLs with any capitalization
-# Captures the unique hash after the + symbol
-INVITE_PATTERN = re.compile(
-    r'(?:https?://)?t\.me/\+([\w-]+)',  # Include hyphen in matching
-    re.IGNORECASE
-)
+# Regex pattern optimization: Simplified pattern for faster matching
+INVITE_PATTERN = re.compile(r't\.me/\+([\w-]+)', re.IGNORECASE)
+
+# Connection pool for request management
+class ConnectionPool:
+    def __init__(self, size=5):
+        self.size = size
+        self.available = asyncio.Queue()
+        self.connections = []
+
+    async def init_pool(self, client):
+        for _ in range(self.size):
+            conn = await client.connect()
+            self.connections.append(conn)
+            await self.available.put(conn)
+
+    async def get_connection(self):
+        return await self.available.get()
+
+    async def release_connection(self, conn):
+        await self.available.put(conn)
+
+class InviteCache:
+    def __init__(self, max_size=10000):
+        self.cache = OrderedDict()
+        self.max_size = max_size
+    
+    def add(self, link: str, status: str):
+        if len(self.cache) >= self.max_size:
+            self.cache.popitem(last=False)  # Remove oldest item
+        self.cache[link] = {
+            'status': status,
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+    
+    def exists(self, link: str) -> bool:
+        return link in self.cache
+    
+    def get_status(self, link: str) -> dict:
+        return self.cache.get(link)
 
 async def main():
     """Main entry point for the invite sniper bot.
-    Handles user authentication, channel verification, and event monitoring.
-    Implements batched database writes for performance optimization."""
+    Implements optimized connection handling and request processing."""
     
     # Get user input
     phone = input("Enter your phone number (international format): ").strip().replace(' ', '')
     target_chat = input("Enter target channel ID (with or without -100 prefix): ").strip()
     
-    # Configure client with optimized Telegram connection settings:
-    # - TCP Abridged for faster packet encoding
-    # - 3 connection retries for reliability
-    # - Reduced flood sleep threshold for responsiveness
+    # Optimized client configuration
     client = TelegramClient(
         'sniper_session', 
         API_ID, 
         API_HASH,
-        connection=ConnectionTcpFull,  # Switch to full encryption for faster packet processing
-        use_ipv6=False,  # Disable IPv6 lookup
-        connection_retries=1,  # Fail fast
+        connection=ConnectionTcpAbridged,  # Faster packet processing
+        use_ipv6=False,
+        connection_retries=1,
         request_retries=1,
-        flood_sleep_threshold=0,  # No flood wait
-        auto_reconnect=False,
-        workers=16,  # Increase worker threads
+        flood_sleep_threshold=0,
+        auto_reconnect=True,  # Enable auto-reconnect
+        receive_timeout=3,
+        retry_delay=0,
         device_model="SniperX",
         app_version="4.0.0"
     )
@@ -88,131 +118,78 @@ async def main():
         await client.disconnect()
         return
     
-    # Database setup using async SQLite:
-    # - Stores invite links with timestamp and status
-    # - Uses memory cache to avoid duplicate processing
-    conn = await aiosqlite.connect('invite_links.db')
-    c = await conn.cursor()
-    await c.execute('''CREATE TABLE IF NOT EXISTS invites
-             (link TEXT PRIMARY KEY,
-              date TEXT,
-              status TEXT)''')
-    await conn.commit()
+    # Initialize connection pool
+    pool = ConnectionPool(size=5)
+    await pool.init_pool(client)
 
-    # Preload existing links to memory
-    await c.execute('SELECT link FROM invites')
-    existing_links = {row[0] async for row in c}
-    
+    # Initialize in-memory cache
+    invite_cache = InviteCache()
+
     @client.on(events.NewMessage(chats=input_entity))
     async def handler(event):
-        """Message handler that scans for invite links in real-time.
-        Uses perf_counter for high-precision timing measurements.
-        Processes multiple matches concurrently using asyncio.gather."""
+        """Optimized message handler with in-memory caching"""
         try:
-            detection_time = time.perf_counter()  # More precise timing
+            detection_time = time.perf_counter()
             text = event.message.text
             
             if matches := INVITE_PATTERN.finditer(text):
-                # Process matches concurrently
-                await asyncio.gather(*[
-                    process_invite(match, detection_time, existing_links)
-                    for match in matches
-                ])
+                conn = await pool.get_connection()
+                try:
+                    await asyncio.gather(*[
+                        process_invite(match, detection_time, invite_cache, conn)
+                        for match in matches
+                    ])
+                finally:
+                    await pool.release_connection(conn)
     
         except Exception as e:
             print(f"{Fore.RED}🚨 Critical error: {str(e)}{Style.RESET_ALL}")
 
-    async def process_invite(match, detection_time, cache):
-        """Processes a single invite link match.
-        Args:
-            match: re.Match object containing the invite hash
-            detection_time: Timestamp of initial message detection
-            cache: Set of already processed links for deduplication"""
+    async def process_invite(match, detection_time, cache, conn):
+        """Optimized invite processing with in-memory caching"""
         invite_hash = match.group(1)
         link = f"https://t.me/+{invite_hash}"
         
-        if link in cache:
-            return  # Skip already processed links
+        if cache.exists(link):
+            return
             
         detect_latency = (time.perf_counter() - detection_time) * 1000
         print(f"{Fore.CYAN}⌛ Detection: {detect_latency:.2f}ms{Style.RESET_ALL}")
         
         join_start = time.perf_counter()
         try:
-            # Bypass normal request handling
             await asyncio.wait_for(
                 client._sender.send(
                     ImportChatInviteRequest(invite_hash),
-                    retries=0  # No retries
+                    retries=0
                 ),
-                timeout=0.3  # 300ms hard timeout
+                timeout=0.1
             )
             
             join_time = (time.perf_counter() - join_start) * 1000
             print(f"{Fore.GREEN}✅ Joined in {join_time:.2f}ms{Style.RESET_ALL} | {link}")
-            cache.add(link)
-            
-            # Queue write operation instead of immediate commit
-            asyncio.create_task(queue_write(link, 'joined'))
+            cache.add(link, 'joined')
             
         except asyncio.TimeoutError:
-            print(f"{Fore.RED}⌛ Timeout after 300ms{Style.RESET_ALL}")
+            print(f"{Fore.RED}⌛ Timeout after 100ms{Style.RESET_ALL}")
+            cache.add(link, 'timeout')
         except InviteHashExpiredError:
-            # Handle links that are no longer valid
             status = 'expired'
             print(f"{Fore.RED}❌ Expired link: {link}{Style.RESET_ALL}")
-            asyncio.create_task(queue_write(link, status))
+            cache.add(link, status)
         except ValueError as ve:
             if "A wait of" in str(ve):
-                # Handle flood wait errors and existing membership
                 status = 'already member'
                 print(f"{Fore.YELLOW}ℹ️ Already in group: {link}{Style.RESET_ALL}")
-                asyncio.create_task(queue_write(link, status))
+                cache.add(link, status)
             else:
-                # General value errors (malformed requests)
                 status = f'error: {str(ve)}'
                 print(f"{Fore.RED}⚠️ Error joining {link}: {str(ve)}{Style.RESET_ALL}")
-                asyncio.create_task(queue_write(link, status))
+                cache.add(link, status)
         except Exception as e:
-            # Catch-all for unexpected errors
             join_time = (time.perf_counter() - join_start) * 1000
             print(f"{Fore.RED}⚠️ Failed in {join_time:.2f}ms{Style.RESET_ALL} | {str(e)}")
-            asyncio.create_task(queue_write(link, status))
-
-    # Batch writing system reduces database I/O operations
-    write_queue = []
-    async def queue_write(link, status):
-        """Queues write operations for batched database commits.
-        Reduces disk I/O by grouping up to 5 operations before writing."""
-        write_queue.append((
-            link,
-            datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            status
-        ))
-        
-        if len(write_queue) >= 5:  # Batch every 5 entries
-            await bulk_write()
-    
-    async def bulk_write():
-        """Executes batched database writes and maintains queue state."""
-        nonlocal write_queue
-        try:
-            await c.executemany(
-                '''INSERT OR IGNORE INTO invites VALUES (?, ?, ?)''',
-                write_queue
-            )
-            await conn.commit()
-        finally:
-            write_queue = []  # Reset queue even if commit fails
-
-    # Add connection pre-warming
-    async def maintain_connection():
-        while True:
-            if not client.is_connected():
-                await client.connect()
-            await asyncio.sleep(0.1)
-
-    asyncio.create_task(maintain_connection())
+            cache.add(link, f'error: {str(e)}')
 
     print("Invite sniper is actively monitoring...")
     await client.run_until_disconnected()
