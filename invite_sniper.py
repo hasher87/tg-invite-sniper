@@ -99,13 +99,13 @@ async def main():
     try:
         print("[*] Initializing clients...")
         
-        # Initialize bot client for notifications
+        # Initialize bot client for notifications with memory session
         bot = TelegramClient(
-            'bot',
+            StringSession(),  # Use memory session instead of file
             API_ID,
             API_HASH
         )
-        await bot.start(bot_token=BOT_TOKEN)  # Await the start
+        await bot.start(bot_token=BOT_TOKEN)
         
         print("[+] Bot client initialized")
         
