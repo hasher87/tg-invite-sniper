@@ -104,7 +104,8 @@ async def main():
             'bot',
             API_ID,
             API_HASH
-        ).start(bot_token=BOT_TOKEN)
+        )
+        await bot.start(bot_token=BOT_TOKEN)  # Await the start
         
         print("[+] Bot client initialized")
         
