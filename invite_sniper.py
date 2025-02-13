@@ -26,9 +26,10 @@ API_HASH = os.getenv('API_HASH')
 SESSION_STRING = os.getenv('SESSION_STRING')
 TARGET_CHANNEL = os.getenv('TARGET_CHANNEL')
 NOTIFICATION_CHAT_ID = int(os.getenv('NOTIFICATION_CHAT_ID'))
+BOT_TOKEN = os.getenv('BOT_TOKEN')  # Get bot token from env
 
 # Check required variables
-if not all([API_ID, API_HASH, SESSION_STRING, TARGET_CHANNEL, NOTIFICATION_CHAT_ID]):
+if not all([API_ID, API_HASH, SESSION_STRING, TARGET_CHANNEL, NOTIFICATION_CHAT_ID, BOT_TOKEN]):
     print("Error: Missing required environment variables")
     exit(1)
 
@@ -96,7 +97,16 @@ async def try_join_chat(client, invite_hash, max_retries=3):
 
 async def main():
     try:
-        print("[*] Initializing client...")
+        print("[*] Initializing clients...")
+        
+        # Initialize bot client for notifications
+        bot = TelegramClient(
+            'bot',
+            API_ID,
+            API_HASH
+        ).start(bot_token=BOT_TOKEN)
+        
+        print("[+] Bot client initialized")
         
         # Initialize main client with session string
         try:
@@ -151,14 +161,14 @@ async def main():
                 else:
                     raise ValueError(f"Could not find channel {TARGET_CHANNEL}")
             
-            # Send initial status message
+            # Send initial status message using bot
             status_msg = (
                 f"🎯 **Sniper Active**\n"
                 f"📡 Monitoring: `{TARGET_CHANNEL}`\n"
                 f"⚡ Status: Active and ready\n"
                 f"🔄 Detection rate: ~100ms"
             )
-            await client.send_message(NOTIFICATION_CHAT_ID, status_msg, parse_mode='md')
+            await bot.send_message(NOTIFICATION_CHAT_ID, status_msg, parse_mode='md')
             
         except Exception as e:
             print(f"[-] Failed to setup monitoring: {str(e)}")
@@ -195,13 +205,13 @@ async def main():
                             
                             print(f"[+] Found invite: {invite_hash}")
                             
-                            # Send detection notification
+                            # Send detection notification using bot
                             detect_msg = (
                                 f"🔍 **Invite Detected**\n"
                                 f"⚡ Detection time: `{detection_time:.2f}ms`\n"
                                 f"🔗 Link: `t.me/+{invite_hash}`"
                             )
-                            await client.send_message(NOTIFICATION_CHAT_ID, detect_msg, parse_mode='md')
+                            await bot.send_message(NOTIFICATION_CHAT_ID, detect_msg, parse_mode='md')
                             
                             join_start = time.perf_counter()
                             success, status = await try_join_chat(client, invite_hash)
@@ -209,7 +219,7 @@ async def main():
                             
                             if success:
                                 successful_joins += 1
-                                # Send success notification
+                                # Send success notification using bot
                                 success_msg = (
                                     f"✅ **Join Successful**\n"
                                     f"⚡ Total time: `{(detection_time + join_time):.2f}ms`\n"
@@ -218,22 +228,22 @@ async def main():
                                     f"- Join: `{join_time:.2f}ms`\n"
                                     f"📈 Success rate: `{(successful_joins/total_invites)*100:.1f}%`"
                                 )
-                                await client.send_message(NOTIFICATION_CHAT_ID, success_msg, parse_mode='md')
+                                await bot.send_message(NOTIFICATION_CHAT_ID, success_msg, parse_mode='md')
                             else:
                                 failed_joins += 1
-                                # Send failure notification
+                                # Send failure notification using bot
                                 fail_msg = (
                                     f"❌ **Join Failed**\n"
                                     f"⚡ Detection time: `{detection_time:.2f}ms`\n"
                                     f"❗ Reason: `{status}`\n"
                                     f"📈 Success rate: `{(successful_joins/total_invites)*100:.1f}%`"
                                 )
-                                await client.send_message(NOTIFICATION_CHAT_ID, fail_msg, parse_mode='md')
+                                await bot.send_message(NOTIFICATION_CHAT_ID, fail_msg, parse_mode='md')
             
             except Exception as e:
                 print(f"[-] Error processing message: {str(e)}")
                 error_msg = f"⚠️ **Error**: `{str(e)}`"
-                await client.send_message(NOTIFICATION_CHAT_ID, error_msg, parse_mode='md')
+                await bot.send_message(NOTIFICATION_CHAT_ID, error_msg, parse_mode='md')
         
         print("[+] Monitoring for invite links...")
         print("[*] Press Ctrl+C to stop.")
@@ -242,8 +252,8 @@ async def main():
         
     except Exception as e:
         print(f"[-] Fatal error: {str(e)}")
-        if 'client' in locals() and client.is_connected():
-            await client.send_message(NOTIFICATION_CHAT_ID, f"🚫 **Fatal Error**: `{str(e)}`", parse_mode='md')
+        if 'bot' in locals():
+            await bot.send_message(NOTIFICATION_CHAT_ID, f"🚫 **Fatal Error**: `{str(e)}`", parse_mode='md')
         
 if __name__ == '__main__':
     asyncio.run(main())

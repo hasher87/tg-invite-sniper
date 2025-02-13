@@ -89,7 +89,8 @@ async def start_sniper(session_string, target_channel, chat_id):
             'SESSION_STRING': session_string,
             'TARGET_CHANNEL': str(target_channel),
             'SNIPER_ID': str(sniper_id),
-            'NOTIFICATION_CHAT_ID': str(chat_id)  # Add chat ID for notifications
+            'NOTIFICATION_CHAT_ID': str(chat_id),  # Add chat ID for notifications
+            'BOT_TOKEN': str(BOT_TOKEN)  # Add bot token for notifications
         })
         
         print("Starting sniper with configuration:")
