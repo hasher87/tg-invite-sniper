@@ -78,6 +78,8 @@ class UserState:
         self.waiting_for_channel = False
         self.client = None
         self.session_string = None
+        self.code_request_time = None  # Track when code was requested
+        self.code_attempts = 0  # Track number of attempts
 
 async def start_sniper_process(phone, session_string, channel):
     """Start a new sniper process for a user"""
@@ -171,6 +173,30 @@ async def main():
             else:
                 await event.respond("❌ No active sniper found.")
 
+        @bot.on(events.NewMessage(pattern='/resend'))
+        async def resend_code(event):
+            user_id = event.sender_id
+            if user_id not in user_states or not user_states[user_id].waiting_for_code:
+                await event.respond("⚠️ You can only use this command while waiting for a verification code.")
+                return
+                
+            state = user_states[user_id]
+            try:
+                # Reset code request time and attempts
+                state.code_request_time = time.time()
+                state.code_attempts = 0
+                
+                # Request new code
+                await state.client.send_code_request(state.phone)
+                await event.respond(
+                    "📱 New verification code sent!\n\n"
+                    "Please enter the new code you received.\n"
+                    "⚠️ Note: Previous codes are now invalid."
+                )
+            except Exception as e:
+                await event.respond(f"❌ Error sending new code: {str(e)}\nPlease start over with /start")
+                del user_states[user_id]
+
         @bot.on(events.NewMessage)
         async def message_handler(event):
             if event.raw_text.startswith('/'):
@@ -218,11 +244,16 @@ async def main():
                 try:
                     await client.send_code_request(phone)
                     state.client = client
+                    state.code_request_time = time.time()  # Record the time code was requested
+                    state.code_attempts = 0
                     await event.respond(
                         "📱 Verification code sent!\n\n"
                         "Please enter the code you received.\n"
                         "(If you have 2FA enabled, you'll be asked for your password next)\n\n"
-                        "⚠️ Note: Never share this code with anyone!"
+                        "⚠️ Notes:\n"
+                        "• Code expires in 2 minutes\n"
+                        "• Use /resend if you need a new code\n"
+                        "• Never share this code with anyone!"
                     )
                 except Exception as e:
                     await event.respond(f"❌ Error: {str(e)}\nPlease try again with a valid phone number.")
@@ -231,6 +262,26 @@ async def main():
             elif state.waiting_for_code:
                 try:
                     code = event.raw_text.strip()
+                    
+                    # Check if code has expired (2 minutes)
+                    if time.time() - state.code_request_time > 120:
+                        await event.respond(
+                            "⚠️ This code has expired!\n\n"
+                            "Use /resend to get a new verification code, or\n"
+                            "Use /start to start over."
+                        )
+                        return
+                    
+                    # Track attempts
+                    state.code_attempts += 1
+                    if state.code_attempts >= 3:
+                        await event.respond(
+                            "❌ Too many invalid attempts!\n\n"
+                            "Use /resend to get a new code, or\n"
+                            "Use /start to start over."
+                        )
+                        return
+                    
                     await state.client.sign_in(state.phone, code)
                     
                     # Save session string
@@ -253,13 +304,20 @@ async def main():
                         "⚠️ Note: This is your account's 2FA password, not the bot access code."
                     )
                 except PhoneCodeInvalidError:
+                    remaining_attempts = 3 - state.code_attempts
                     await event.respond(
-                        "❌ Invalid code!\n\n"
-                        "Please try again or request a new code by restarting with /start"
+                        f"❌ Invalid code! {remaining_attempts} attempts remaining.\n\n"
+                        "Please try again, or:\n"
+                        "• Use /resend to get a new code\n"
+                        "• Use /start to start over"
                     )
                 except Exception as e:
-                    await event.respond(f"❌ Error: {str(e)}\nPlease start over with /start")
-                    del user_states[user_id]
+                    await event.respond(
+                        f"❌ Error: {str(e)}\n\n"
+                        "Please:\n"
+                        "• Use /resend to get a new code\n"
+                        "• Use /start to start over"
+                    )
                     
             elif state.waiting_for_2fa:
                 try:
