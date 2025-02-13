@@ -70,8 +70,8 @@ async def main():
     
     # Optimized client configuration
     client = TelegramClient(
-        'sniper_session', 
-        API_ID, 
+        'sniper_session',
+        API_ID,
         API_HASH,
         connection=ConnectionTcpAbridged,  # Faster packet processing
         use_ipv6=False,
@@ -79,7 +79,6 @@ async def main():
         request_retries=1,
         flood_sleep_threshold=0,
         auto_reconnect=True,  # Enable auto-reconnect
-        receive_timeout=3,
         retry_delay=0,
         device_model="SniperX",
         app_version="4.0.0"
