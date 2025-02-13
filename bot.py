@@ -73,7 +73,7 @@ async def generate_qr(url):
         print(f"Error generating QR code: {str(e)}")
         raise
 
-async def start_sniper(session_string, target_channel):
+async def start_sniper(session_string, target_channel, chat_id):
     """Start a new sniper process"""
     try:
         # Create a unique ID for this sniper instance
@@ -86,18 +86,20 @@ async def start_sniper(session_string, target_channel):
         env.update({
             'API_ID': str(API_ID),
             'API_HASH': str(API_HASH),
-            'SESSION_STRING': session_string,  # Pass session string directly
+            'SESSION_STRING': session_string,
             'TARGET_CHANNEL': str(target_channel),
-            'SNIPER_ID': str(sniper_id)
+            'SNIPER_ID': str(sniper_id),
+            'NOTIFICATION_CHAT_ID': str(chat_id)  # Add chat ID for notifications
         })
         
         print("Starting sniper with configuration:")
         print(f"Target Channel: {env['TARGET_CHANNEL']}")
         print(f"Session String Length: {len(env['SESSION_STRING'])}")
+        print(f"Notification Chat ID: {env['NOTIFICATION_CHAT_ID']}")
         
         # Start the sniper process with the clean environment
         process = await asyncio.create_subprocess_exec(
-            sys.executable,  # Use current Python interpreter
+            sys.executable,
             'invite_sniper.py',
             env=env,
             stdout=asyncio.subprocess.PIPE,
@@ -390,8 +392,8 @@ async def main():
                 print(f"Processing channel input from user {user_id}")
                 
                 try:
-                    # Start the sniper process
-                    state.process, state.sniper_id = await start_sniper(state.session_string, message)
+                    # Start the sniper process with chat_id
+                    state.process, state.sniper_id = await start_sniper(state.session_string, message, chat_id)
                     print(f"Sniper started for user {user_id} on channel {message}")
                     
                     await bot.send_message(

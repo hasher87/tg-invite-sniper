@@ -25,15 +25,17 @@ API_ID = int(os.getenv('API_ID'))
 API_HASH = os.getenv('API_HASH')
 SESSION_STRING = os.getenv('SESSION_STRING')
 TARGET_CHANNEL = os.getenv('TARGET_CHANNEL')
+NOTIFICATION_CHAT_ID = int(os.getenv('NOTIFICATION_CHAT_ID'))
 
 # Check required variables
-if not all([API_ID, API_HASH, SESSION_STRING, TARGET_CHANNEL]):
+if not all([API_ID, API_HASH, SESSION_STRING, TARGET_CHANNEL, NOTIFICATION_CHAT_ID]):
     print("Error: Missing required environment variables")
     exit(1)
 
 print("Loaded configuration:")
 print(f"Target Channel: {TARGET_CHANNEL}")
 print(f"Session String Length: {len(SESSION_STRING) if SESSION_STRING else 0}")
+print(f"Notification Chat ID: {NOTIFICATION_CHAT_ID}")
 
 # Optimize regex patterns for faster matching
 INVITE_PATTERNS = [
@@ -132,8 +134,7 @@ async def main():
         # Get entity to ensure we're connected to the right channel
         try:
             me = await client.get_me()
-            user_id = me.id
-            print(f"[+] Logged in as: {me.first_name} (ID: {user_id})")
+            print(f"[+] Logged in as: {me.first_name} (ID: {me.id})")
             
             # Get the target channel
             try:
@@ -157,7 +158,7 @@ async def main():
                 f"⚡ Status: Active and ready\n"
                 f"🔄 Detection rate: ~100ms"
             )
-            await client.send_message('me', status_msg, parse_mode='md')
+            await client.send_message(NOTIFICATION_CHAT_ID, status_msg, parse_mode='md')
             
         except Exception as e:
             print(f"[-] Failed to setup monitoring: {str(e)}")
@@ -200,7 +201,7 @@ async def main():
                                 f"⚡ Detection time: `{detection_time:.2f}ms`\n"
                                 f"🔗 Link: `t.me/+{invite_hash}`"
                             )
-                            await client.send_message('me', detect_msg, parse_mode='md')
+                            await client.send_message(NOTIFICATION_CHAT_ID, detect_msg, parse_mode='md')
                             
                             join_start = time.perf_counter()
                             success, status = await try_join_chat(client, invite_hash)
@@ -217,7 +218,7 @@ async def main():
                                     f"- Join: `{join_time:.2f}ms`\n"
                                     f"📈 Success rate: `{(successful_joins/total_invites)*100:.1f}%`"
                                 )
-                                await client.send_message('me', success_msg, parse_mode='md')
+                                await client.send_message(NOTIFICATION_CHAT_ID, success_msg, parse_mode='md')
                             else:
                                 failed_joins += 1
                                 # Send failure notification
@@ -227,12 +228,12 @@ async def main():
                                     f"❗ Reason: `{status}`\n"
                                     f"📈 Success rate: `{(successful_joins/total_invites)*100:.1f}%`"
                                 )
-                                await client.send_message('me', fail_msg, parse_mode='md')
+                                await client.send_message(NOTIFICATION_CHAT_ID, fail_msg, parse_mode='md')
             
             except Exception as e:
                 print(f"[-] Error processing message: {str(e)}")
                 error_msg = f"⚠️ **Error**: `{str(e)}`"
-                await client.send_message('me', error_msg, parse_mode='md')
+                await client.send_message(NOTIFICATION_CHAT_ID, error_msg, parse_mode='md')
         
         print("[+] Monitoring for invite links...")
         print("[*] Press Ctrl+C to stop.")
@@ -242,7 +243,7 @@ async def main():
     except Exception as e:
         print(f"[-] Fatal error: {str(e)}")
         if 'client' in locals() and client.is_connected():
-            await client.send_message('me', f"🚫 **Fatal Error**: `{str(e)}`", parse_mode='md')
+            await client.send_message(NOTIFICATION_CHAT_ID, f"🚫 **Fatal Error**: `{str(e)}`", parse_mode='md')
         
 if __name__ == '__main__':
     asyncio.run(main())
