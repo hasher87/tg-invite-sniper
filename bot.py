@@ -21,6 +21,13 @@ BOT_TOKEN = os.getenv('BOT_TOKEN')
 API_ID = int(os.getenv('API_ID'))
 API_HASH = os.getenv('API_HASH')
 
+# Device Info for authentication
+DEVICE_MODEL = "Windows 10"
+SYSTEM_VERSION = "10.0"
+APP_VERSION = "1.0.0"
+LANG_CODE = 'en'
+SYSTEM_LANG_CODE = 'en'
+
 # Store user states and sessions
 user_states = {}
 user_processes = {}
@@ -233,19 +240,31 @@ async def main():
                 state.waiting_for_phone = False
                 state.waiting_for_code = True
                 
-                # Initialize client for authentication
+                # Initialize client for authentication with proper device info
                 client = TelegramClient(
                     StringSession(),
                     API_ID,
-                    API_HASH
+                    API_HASH,
+                    device_model=DEVICE_MODEL,
+                    system_version=SYSTEM_VERSION,
+                    app_version=APP_VERSION,
+                    lang_code=LANG_CODE,
+                    system_lang_code=SYSTEM_LANG_CODE
                 )
-                await client.connect()
                 
                 try:
-                    await client.send_code_request(phone)
+                    await client.connect()
+                    
+                    # Send code request with additional parameters
+                    await client.send_code_request(
+                        phone,
+                        force_sms=False
+                    )
+                    
                     state.client = client
-                    state.code_request_time = time.time()  # Record the time code was requested
+                    state.code_request_time = time.time()
                     state.code_attempts = 0
+                    
                     await event.respond(
                         "📱 Verification code sent!\n\n"
                         "Please enter the code you received.\n"
@@ -253,7 +272,8 @@ async def main():
                         "⚠️ Notes:\n"
                         "• Code expires in 2 minutes\n"
                         "• Use /resend if you need a new code\n"
-                        "• Never share this code with anyone!"
+                        "• Never share this code with anyone!\n\n"
+                        "ℹ️ If you get a login alert, please approve it in your Telegram app."
                     )
                 except Exception as e:
                     await event.respond(f"❌ Error: {str(e)}\nPlease try again with a valid phone number.")

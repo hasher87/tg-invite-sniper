@@ -19,6 +19,13 @@ API_HASH = os.getenv('API_HASH')
 SESSION_STRING = os.getenv('SESSION_STRING')
 TARGET_CHANNEL = os.getenv('TARGET_CHANNEL')
 
+# Device Info
+DEVICE_MODEL = "Windows 10"
+SYSTEM_VERSION = "10.0"
+APP_VERSION = "1.0.0"
+LANG_CODE = 'en'
+SYSTEM_LANG_CODE = 'en'
+
 if not all([API_ID, API_HASH, SESSION_STRING, TARGET_CHANNEL]):
     print("❌ Missing required environment variables")
     exit(1)
@@ -33,6 +40,11 @@ async def main():
             StringSession(SESSION_STRING),
             API_ID,
             API_HASH,
+            device_model=DEVICE_MODEL,
+            system_version=SYSTEM_VERSION,
+            app_version=APP_VERSION,
+            lang_code=LANG_CODE,
+            system_lang_code=SYSTEM_LANG_CODE,
             connection=ConnectionTcpAbridged,
             use_ipv6=False,
             connection_retries=1,
@@ -40,8 +52,6 @@ async def main():
             flood_sleep_threshold=0,
             auto_reconnect=True,
             retry_delay=0,
-            device_model="SniperX",
-            app_version="4.0.0",
             receive_updates=False,
             catch_up=False,
         )
