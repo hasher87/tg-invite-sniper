@@ -159,8 +159,7 @@ async def main():
         try:
             await asyncio.wait_for(
                 client._sender.send(
-                    ImportChatInviteRequest(invite_hash),
-                    retries=0
+                    ImportChatInviteRequest(invite_hash)
                 ),
                 timeout=0.1
             )
