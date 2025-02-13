@@ -43,57 +43,73 @@ INVITE_PATTERNS = [
 
 async def try_join_chat(client, invite_hash, max_retries=3):
     """Try to join a chat with retries"""
+    status_message = None
     for attempt in range(max_retries):
         try:
             # First check if the invite is valid
             try:
                 print(f"[+] Checking invite validity: {invite_hash}")
-                invite_info = await client(CheckChatInviteRequest(invite_hash))
-                title = getattr(invite_info, 'title', 'Unknown Group')
-                participants = getattr(invite_info, 'participants_count', 0)
-                print(f"[+] Invite is valid - {title} ({participants} members)")
-                return True, invite_info
+                await client(CheckChatInviteRequest(invite_hash))
+                print("[+] Invite is valid")
             except Exception as e:
-                print(f"[-] Invalid invite link: {str(e)}")
-                return False, None
+                error_msg = f"[-] Invalid invite link: {str(e)}"
+                print(error_msg)
+                return False, error_msg
 
             # Try to join
             print("[*] Attempting to join...")
             result = await client(ImportChatInviteRequest(invite_hash))
-            chat = getattr(result, 'chats', [{}])[0]
-            title = getattr(chat, 'title', 'Unknown Group')
-            print(f"[+] Successfully joined {title}!")
-            return True, result
+            chat_title = getattr(result.chats[0], 'title', 'Unknown Channel')
+            success_msg = f"[+] Successfully joined {chat_title}!"
+            print(success_msg)
+            return True, success_msg
             
         except UserAlreadyParticipantError:
-            print("[!] Already a member")
-            return False, None
+            msg = "[!] Already a member of this channel"
+            print(msg)
+            return False, msg
             
         except InviteHashExpiredError:
-            print("[-] Invite expired")
-            return False, None
+            msg = "[-] Invite link has expired"
+            print(msg)
+            return False, msg
             
         except FloodWaitError as e:
             wait_time = e.seconds
-            print(f"[!] Need to wait {wait_time} seconds")
+            msg = f"[!] Rate limited. Need to wait {wait_time} seconds"
+            print(msg)
             if attempt < max_retries - 1:
                 await asyncio.sleep(wait_time)
             continue
             
         except Exception as e:
-            print(f"[-] Join attempt {attempt + 1} failed: {str(e)}")
+            msg = f"[-] Join attempt {attempt + 1} failed: {str(e)}"
+            print(msg)
             if attempt < max_retries - 1:
                 await asyncio.sleep(0.5)
                 continue
-            return False, None
+            return False, msg
     
-    return False, None
+    return False, "[-] Failed to join after all retries"
 
 async def main():
     try:
         print("[*] Initializing client...")
         
-        # Initialize client with session string
+        # Initialize notification client
+        notify_client = TelegramClient(
+            StringSession(),
+            API_ID,
+            API_HASH,
+            device_model="Windows",
+            system_version="10",
+            app_version="1.0",
+            lang_code="en",
+            system_lang_code="en"
+        )
+        await notify_client.start()
+        
+        # Initialize main client with session string
         try:
             session = StringSession(SESSION_STRING)
             print("[+] Session string loaded successfully")
@@ -129,15 +145,34 @@ async def main():
         # Get entity to ensure we're connected to the right channel
         try:
             target = await client.get_entity(TARGET_CHANNEL)
+            me = await client.get_me()
+            user_id = me.id
             print(f"[+] Successfully resolved target channel: {getattr(target, 'title', TARGET_CHANNEL)}")
+            
+            # Send initial status message
+            status_msg = (
+                f"🎯 **Sniper Active**\n"
+                f"📡 Monitoring: `{TARGET_CHANNEL}`\n"
+                f"⚡ Status: Active and ready\n"
+                f"🔄 Detection rate: ~100ms"
+            )
+            await notify_client.send_message(user_id, status_msg, parse_mode='md')
+            
         except Exception as e:
             print(f"[-] Failed to resolve target channel: {str(e)}")
             return
         
+        # Track statistics
+        total_invites = 0
+        successful_joins = 0
+        failed_joins = 0
+        total_detection_time = 0
+        
         @client.on(events.NewMessage(chats=target))
         async def handler(event):
             try:
-                detection_time = time.perf_counter()
+                nonlocal total_invites, successful_joins, failed_joins, total_detection_time
+                detection_start = time.perf_counter()
                 text = event.raw_text
                 print(f"[*] New message received: {text}")
                 
@@ -146,31 +181,53 @@ async def main():
                     if matches := pattern.finditer(text):
                         for match in matches:
                             invite_hash = match.group(1)
+                            total_invites += 1
+                            
+                            detection_time = (time.perf_counter() - detection_start) * 1000
+                            total_detection_time += detection_time
+                            avg_detection = total_detection_time / total_invites
+                            
                             print(f"[+] Found invite: {invite_hash}")
                             
+                            # Send detection notification
+                            detect_msg = (
+                                f"🔍 **Invite Detected**\n"
+                                f"⚡ Detection time: `{detection_time:.2f}ms`\n"
+                                f"🔗 Link: `t.me/+{invite_hash}`"
+                            )
+                            await notify_client.send_message(user_id, detect_msg, parse_mode='md')
+                            
                             join_start = time.perf_counter()
-                            success, result = await try_join_chat(client, invite_hash)
+                            success, status = await try_join_chat(client, invite_hash)
                             join_time = (time.perf_counter() - join_start) * 1000
-                            detection_ms = (join_start - detection_time) * 1000
                             
                             if success:
-                                # Get chat info
-                                if isinstance(result, dict):
-                                    title = result.get('title', 'Unknown Group')
-                                    participants = result.get('participants_count', 0)
-                                else:
-                                    title = getattr(result, 'title', 'Unknown Group')
-                                    participants = getattr(result, 'participants_count', 0)
-                                
-                                print(f"[+] Joined in {join_time:.1f}ms!")
-                                print(f"[+] Detection: {detection_ms:.1f}ms")
-                                print(f"[+] Stats: {title} ({participants} members)")
+                                successful_joins += 1
+                                # Send success notification
+                                success_msg = (
+                                    f"✅ **Join Successful**\n"
+                                    f"⚡ Total time: `{(detection_time + join_time):.2f}ms`\n"
+                                    f"📊 Stats:\n"
+                                    f"- Detection: `{detection_time:.2f}ms`\n"
+                                    f"- Join: `{join_time:.2f}ms`\n"
+                                    f"📈 Success rate: `{(successful_joins/total_invites)*100:.1f}%`"
+                                )
+                                await notify_client.send_message(user_id, success_msg, parse_mode='md')
                             else:
-                                print(f"[-] Failed to join after {join_time:.1f}ms")
-                                print(f"[+] Detection: {detection_ms:.1f}ms")
+                                failed_joins += 1
+                                # Send failure notification
+                                fail_msg = (
+                                    f"❌ **Join Failed**\n"
+                                    f"⚡ Detection time: `{detection_time:.2f}ms`\n"
+                                    f"❗ Reason: `{status}`\n"
+                                    f"📈 Success rate: `{(successful_joins/total_invites)*100:.1f}%`"
+                                )
+                                await notify_client.send_message(user_id, fail_msg, parse_mode='md')
             
             except Exception as e:
                 print(f"[-] Error processing message: {str(e)}")
+                error_msg = f"⚠️ **Error**: `{str(e)}`"
+                await notify_client.send_message(user_id, error_msg, parse_mode='md')
         
         print("[+] Monitoring for invite links...")
         print("[*] Press Ctrl+C to stop.")
@@ -179,6 +236,8 @@ async def main():
         
     except Exception as e:
         print(f"[-] Fatal error: {str(e)}")
+        if 'notify_client' in locals() and notify_client.is_connected():
+            await notify_client.send_message(user_id, f"🚫 **Fatal Error**: `{str(e)}`", parse_mode='md')
         
 if __name__ == '__main__':
     asyncio.run(main())
