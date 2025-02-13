@@ -70,8 +70,8 @@ async def main():
     
     # Optimized client configuration
     client = TelegramClient(
-        'sniper_session',
-        API_ID,
+        'sniper_session', 
+        API_ID, 
         API_HASH,
         connection=ConnectionTcpAbridged,  # Faster packet processing
         use_ipv6=False,
@@ -145,7 +145,7 @@ async def main():
             print(f"{Fore.RED}🚨 Critical error: {str(e)}{Style.RESET_ALL}")
 
     async def process_invite(match, detection_time, cache, conn):
-        """Optimized invite processing with in-memory caching"""
+        """Optimized invite processing with in-memory caching and persistent retries"""
         invite_hash = match.group(1)
         link = f"https://t.me/+{invite_hash}"
         
@@ -155,42 +155,61 @@ async def main():
         detect_latency = (time.perf_counter() - detection_time) * 1000
         print(f"{Fore.CYAN}⌛ Detection: {detect_latency:.2f}ms{Style.RESET_ALL}")
         
-        join_start = time.perf_counter()
-        try:
-            await asyncio.wait_for(
-                client._sender.send(
-                    ImportChatInviteRequest(invite_hash)
-                ),
-                timeout=0.1
-            )
-            
-            join_time = (time.perf_counter() - join_start) * 1000
-            print(f"{Fore.GREEN}✅ Joined in {join_time:.2f}ms{Style.RESET_ALL} | {link}")
-            cache.add(link, 'joined')
-            
-        except asyncio.TimeoutError:
-            print(f"{Fore.RED}⌛ Timeout after 100ms{Style.RESET_ALL}")
-            cache.add(link, 'timeout')
-        except InviteHashExpiredError:
-            status = 'expired'
-            print(f"{Fore.RED}❌ Expired link: {link}{Style.RESET_ALL}")
-            cache.add(link, status)
-        except ValueError as ve:
-            if "A wait of" in str(ve):
-                status = 'already member'
-                print(f"{Fore.YELLOW}ℹ️ Already in group: {link}{Style.RESET_ALL}")
+        max_retries = 10  # Maximum number of retries
+        retry_delay = 0.5  # Delay between retries in seconds
+        attempt = 0
+        
+        while attempt < max_retries:
+            attempt += 1
+            join_start = time.perf_counter()
+            try:
+                await asyncio.wait_for(
+                    client._sender.send(
+                        ImportChatInviteRequest(invite_hash)
+                    ),
+                    timeout=0.1
+                )
+                
+                join_time = (time.perf_counter() - join_start) * 1000
+                print(f"{Fore.GREEN}✅ Joined in {join_time:.2f}ms{Style.RESET_ALL} | {link}")
+                cache.add(link, 'joined')
+                break  # Success, exit retry loop
+                
+            except asyncio.TimeoutError:
+                print(f"{Fore.RED}⌛ Timeout after 100ms (Attempt {attempt}/{max_retries}){Style.RESET_ALL}")
+                if attempt == max_retries:
+                    cache.add(link, 'timeout')
+            except InviteHashExpiredError:
+                status = 'expired'
+                print(f"{Fore.RED}❌ Expired link: {link}{Style.RESET_ALL}")
                 cache.add(link, status)
-            else:
-                status = f'error: {str(ve)}'
-                print(f"{Fore.RED}⚠️ Error joining {link}: {str(ve)}{Style.RESET_ALL}")
-                cache.add(link, status)
-        except Exception as e:
-            join_time = (time.perf_counter() - join_start) * 1000
-            print(f"{Fore.RED}⚠️ Failed in {join_time:.2f}ms{Style.RESET_ALL} | {str(e)}")
-            cache.add(link, f'error: {str(e)}')
+                break  # No point retrying expired invite
+            except ValueError as ve:
+                if "A wait of" in str(ve):
+                    status = 'already member'
+                    print(f"{Fore.YELLOW}i️ Already in group: {link}{Style.RESET_ALL}")
+                    cache.add(link, status)
+                    break  # No point retrying if already member
+                else:
+                    print(f"{Fore.RED}⚠️ Error joining {link} (Attempt {attempt}/{max_retries}): {str(ve)}{Style.RESET_ALL}")
+                    if attempt == max_retries:
+                        cache.add(link, f'error: {str(ve)}')
+            except Exception as e:
+                join_time = (time.perf_counter() - join_start) * 1000
+                if "Please wait" in str(e) or "Too many requests" in str(e) or "Try again" in str(e):
+                    print(f"{Fore.YELLOW}⚠️ Temporary error (Attempt {attempt}/{max_retries}): {str(e)}{Style.RESET_ALL}")
+                    if attempt < max_retries:
+                        await asyncio.sleep(retry_delay)  # Wait before retrying
+                        continue
+                print(f"{Fore.RED}⚠️ Failed in {join_time:.2f}ms{Style.RESET_ALL} | {str(e)}")
+                if attempt == max_retries:
+                    cache.add(link, f'error: {str(e)}')
+            
+            if attempt < max_retries:
+                await asyncio.sleep(retry_delay)  # Wait before next retry
 
     print("Invite sniper is actively monitoring...")
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
-    asyncio.run(main()) 
+    asyncio.run(main())
