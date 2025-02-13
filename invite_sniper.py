@@ -96,19 +96,6 @@ async def main():
     try:
         print("[*] Initializing client...")
         
-        # Initialize notification client
-        notify_client = TelegramClient(
-            StringSession(),
-            API_ID,
-            API_HASH,
-            device_model="Windows",
-            system_version="10",
-            app_version="1.0",
-            lang_code="en",
-            system_lang_code="en"
-        )
-        await notify_client.start()
-        
         # Initialize main client with session string
         try:
             session = StringSession(SESSION_STRING)
@@ -144,10 +131,24 @@ async def main():
         
         # Get entity to ensure we're connected to the right channel
         try:
-            target = await client.get_entity(TARGET_CHANNEL)
             me = await client.get_me()
             user_id = me.id
-            print(f"[+] Successfully resolved target channel: {getattr(target, 'title', TARGET_CHANNEL)}")
+            print(f"[+] Logged in as: {me.first_name} (ID: {user_id})")
+            
+            # Get the target channel
+            try:
+                target = await client.get_entity(TARGET_CHANNEL)
+                print(f"[+] Successfully resolved target channel: {getattr(target, 'title', TARGET_CHANNEL)}")
+            except ValueError:
+                # If direct resolution fails, try searching for it
+                print("[*] Direct resolution failed, searching for channel...")
+                async for dialog in client.iter_dialogs():
+                    if dialog.name == TARGET_CHANNEL or dialog.entity.username == TARGET_CHANNEL.lstrip('@'):
+                        target = dialog.entity
+                        print(f"[+] Found channel in dialogs: {getattr(target, 'title', TARGET_CHANNEL)}")
+                        break
+                else:
+                    raise ValueError(f"Could not find channel {TARGET_CHANNEL}")
             
             # Send initial status message
             status_msg = (
@@ -156,10 +157,10 @@ async def main():
                 f"⚡ Status: Active and ready\n"
                 f"🔄 Detection rate: ~100ms"
             )
-            await notify_client.send_message(user_id, status_msg, parse_mode='md')
+            await client.send_message('me', status_msg, parse_mode='md')
             
         except Exception as e:
-            print(f"[-] Failed to resolve target channel: {str(e)}")
+            print(f"[-] Failed to setup monitoring: {str(e)}")
             return
         
         # Track statistics
@@ -168,9 +169,13 @@ async def main():
         failed_joins = 0
         total_detection_time = 0
         
-        @client.on(events.NewMessage(chats=target))
+        @client.on(events.NewMessage)
         async def handler(event):
             try:
+                # Check if message is from target channel
+                if not hasattr(event.message.peer_id, 'channel_id') or event.message.peer_id.channel_id != target.id:
+                    return
+                    
                 nonlocal total_invites, successful_joins, failed_joins, total_detection_time
                 detection_start = time.perf_counter()
                 text = event.raw_text
@@ -195,7 +200,7 @@ async def main():
                                 f"⚡ Detection time: `{detection_time:.2f}ms`\n"
                                 f"🔗 Link: `t.me/+{invite_hash}`"
                             )
-                            await notify_client.send_message(user_id, detect_msg, parse_mode='md')
+                            await client.send_message('me', detect_msg, parse_mode='md')
                             
                             join_start = time.perf_counter()
                             success, status = await try_join_chat(client, invite_hash)
@@ -212,7 +217,7 @@ async def main():
                                     f"- Join: `{join_time:.2f}ms`\n"
                                     f"📈 Success rate: `{(successful_joins/total_invites)*100:.1f}%`"
                                 )
-                                await notify_client.send_message(user_id, success_msg, parse_mode='md')
+                                await client.send_message('me', success_msg, parse_mode='md')
                             else:
                                 failed_joins += 1
                                 # Send failure notification
@@ -222,12 +227,12 @@ async def main():
                                     f"❗ Reason: `{status}`\n"
                                     f"📈 Success rate: `{(successful_joins/total_invites)*100:.1f}%`"
                                 )
-                                await notify_client.send_message(user_id, fail_msg, parse_mode='md')
+                                await client.send_message('me', fail_msg, parse_mode='md')
             
             except Exception as e:
                 print(f"[-] Error processing message: {str(e)}")
                 error_msg = f"⚠️ **Error**: `{str(e)}`"
-                await notify_client.send_message(user_id, error_msg, parse_mode='md')
+                await client.send_message('me', error_msg, parse_mode='md')
         
         print("[+] Monitoring for invite links...")
         print("[*] Press Ctrl+C to stop.")
@@ -236,8 +241,8 @@ async def main():
         
     except Exception as e:
         print(f"[-] Fatal error: {str(e)}")
-        if 'notify_client' in locals() and notify_client.is_connected():
-            await notify_client.send_message(user_id, f"🚫 **Fatal Error**: `{str(e)}`", parse_mode='md')
+        if 'client' in locals() and client.is_connected():
+            await client.send_message('me', f"🚫 **Fatal Error**: `{str(e)}`", parse_mode='md')
         
 if __name__ == '__main__':
     asyncio.run(main())
