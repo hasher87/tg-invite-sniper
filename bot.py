@@ -25,9 +25,12 @@ API_HASH = os.getenv('API_HASH')
 user_states = {}
 user_processes = {}
 
+ACCESS_CODE = "hilmiisawesome"  # Required access code
+
 class UserState:
     def __init__(self):
         self.phone = None
+        self.waiting_for_access_code = True  # New state
         self.waiting_for_phone = False
         self.waiting_for_code = False
         self.waiting_for_2fa = False
@@ -69,12 +72,11 @@ async def main():
             
             # Reset user state
             user_states[user_id] = UserState()
-            user_states[user_id].waiting_for_phone = True
             
             await event.respond(
                 "Welcome to Invite Sniper Bot! 🚀\n\n"
-                "To get started, I'll need to create a session for you.\n"
-                "Please send your phone number in international format (e.g., +1234567890)"
+                "⚠️ This is a private bot. Please enter your access code to continue.\n\n"
+                "❓ Don't have an access code? Contact @0xDeepSeek on Twitter (x.com/0xDeepSeek) to get one."
             )
 
         @bot.on(events.NewMessage(pattern='/stop'))
@@ -99,7 +101,23 @@ async def main():
                 
             state = user_states[user_id]
             
-            if state.waiting_for_phone:
+            if state.waiting_for_access_code:
+                access_code = event.raw_text.strip()
+                if access_code == ACCESS_CODE:
+                    state.waiting_for_access_code = False
+                    state.waiting_for_phone = True
+                    await event.respond(
+                        "✅ Access code verified!\n\n"
+                        "Please send your phone number in international format (e.g., +1234567890)"
+                    )
+                else:
+                    await event.respond(
+                        "❌ Invalid access code!\n\n"
+                        "Please try again or contact @0xDeepSeek on Twitter (x.com/0xDeepSeek) to get a valid code."
+                    )
+                return
+            
+            elif state.waiting_for_phone:
                 phone = event.raw_text.strip()
                 state.phone = phone
                 state.waiting_for_phone = False
