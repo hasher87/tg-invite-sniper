@@ -4,11 +4,18 @@ import asyncio
 from datetime import datetime
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
-from telethon.tl.functions.messages import ImportChatInviteRequest
+from telethon.tl.functions.messages import ImportChatInviteRequest, CheckChatInviteRequest
+from telethon.errors import FloodWaitError, UserAlreadyParticipantError, InviteHashExpiredError
 from telethon.network.connection import ConnectionTcpAbridged
 from telethon.sessions import StringSession
-from colorama import Fore, Style
 import time
+import sys
+
+# Enable UTF-8 output
+if sys.platform.startswith('win'):
+    import ctypes
+    kernel32 = ctypes.windll.kernel32
+    kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
 
 # Load environment variables
 load_dotenv()
@@ -19,80 +26,140 @@ API_HASH = os.getenv('API_HASH')
 SESSION_STRING = os.getenv('SESSION_STRING')
 TARGET_CHANNEL = os.getenv('TARGET_CHANNEL')
 
-# Device Info
-DEVICE_MODEL = "Windows 10"
-SYSTEM_VERSION = "10.0"
-APP_VERSION = "1.0.0"
-LANG_CODE = 'en'
-SYSTEM_LANG_CODE = 'en'
-
+# Check required variables
 if not all([API_ID, API_HASH, SESSION_STRING, TARGET_CHANNEL]):
-    print("❌ Missing required environment variables")
+    print("Error: Missing required environment variables")
     exit(1)
 
-# Optimize regex pattern for faster matching
-INVITE_PATTERN = re.compile(r't\.me/\+([a-zA-Z0-9_-]+)', re.IGNORECASE | re.ASCII)
+print("Loaded configuration:")
+print(f"Target Channel: {TARGET_CHANNEL}")
+print(f"Session String Length: {len(SESSION_STRING) if SESSION_STRING else 0}")
+
+# Optimize regex patterns for faster matching
+INVITE_PATTERNS = [
+    re.compile(r'(?:https?://)?(?:t(?:elegram)?\.me|telegram\.org)/\+([a-zA-Z0-9_-]+)', re.IGNORECASE),
+    re.compile(r'(?:https?://)?(?:t(?:elegram)?\.me|telegram\.org)/joinchat/([a-zA-Z0-9_-]+)', re.IGNORECASE),
+]
+
+async def try_join_chat(client, invite_hash, max_retries=3):
+    """Try to join a chat with retries"""
+    for attempt in range(max_retries):
+        try:
+            # First check if the invite is valid
+            try:
+                print(f"[+] Checking invite validity: {invite_hash}")
+                await client(CheckChatInviteRequest(invite_hash))
+                print("[+] Invite is valid")
+            except Exception as e:
+                print(f"[-] Invalid invite link: {str(e)}")
+                return False
+
+            # Try to join
+            print("[*] Attempting to join...")
+            await client(ImportChatInviteRequest(invite_hash))
+            print("[+] Successfully joined!")
+            return True
+            
+        except UserAlreadyParticipantError:
+            print("[!] Already a member")
+            return False
+            
+        except InviteHashExpiredError:
+            print("[-] Invite expired")
+            return False
+            
+        except FloodWaitError as e:
+            wait_time = e.seconds
+            print(f"[!] Need to wait {wait_time} seconds")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(wait_time)
+            continue
+            
+        except Exception as e:
+            print(f"[-] Join attempt {attempt + 1} failed: {str(e)}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(0.5)
+                continue
+            return False
+    
+    return False
 
 async def main():
     try:
+        print("[*] Initializing client...")
+        
         # Initialize client with session string
+        try:
+            session = StringSession(SESSION_STRING)
+            print("[+] Session string loaded successfully")
+        except Exception as e:
+            print(f"[-] Error loading session string: {str(e)}")
+            return
+            
         client = TelegramClient(
-            StringSession(SESSION_STRING),
+            session,
             API_ID,
             API_HASH,
-            device_model=DEVICE_MODEL,
-            system_version=SYSTEM_VERSION,
-            app_version=APP_VERSION,
-            lang_code=LANG_CODE,
-            system_lang_code=SYSTEM_LANG_CODE,
+            device_model="Windows",
+            system_version="10",
+            app_version="1.0",
+            lang_code="en",
+            system_lang_code="en",
             connection=ConnectionTcpAbridged,
             use_ipv6=False,
-            connection_retries=1,
-            request_retries=1,
-            flood_sleep_threshold=0,
+            connection_retries=3,
             auto_reconnect=True,
-            retry_delay=0,
-            receive_updates=False,
-            catch_up=False,
+            retry_delay=1
         )
         
-        print(f"🚀 Starting sniper for {TARGET_CHANNEL}...")
+        print("[*] Connecting to Telegram...")
         await client.connect()
         
         if not await client.is_user_authorized():
-            print("❌ Session is invalid")
+            print("[-] Session is invalid")
             return
             
-        print("✅ Connected successfully!")
+        print("[+] Connected successfully!")
         
-        @client.on(events.NewMessage(chats=TARGET_CHANNEL))
+        # Get entity to ensure we're connected to the right channel
+        try:
+            target = await client.get_entity(TARGET_CHANNEL)
+            print(f"[+] Successfully resolved target channel: {getattr(target, 'title', TARGET_CHANNEL)}")
+        except Exception as e:
+            print(f"[-] Failed to resolve target channel: {str(e)}")
+            return
+        
+        @client.on(events.NewMessage(chats=target))
         async def handler(event):
             try:
                 detection_time = time.perf_counter()
                 text = event.raw_text
+                print(f"[*] New message received: {text}")
                 
-                if matches := INVITE_PATTERN.finditer(text):
-                    for match in matches:
-                        invite_hash = match.group(1)
-                        try:
+                # Check all invite patterns
+                for pattern in INVITE_PATTERNS:
+                    if matches := pattern.finditer(text):
+                        for match in matches:
+                            invite_hash = match.group(1)
+                            print(f"[+] Found invite: {invite_hash}")
+                            
                             join_start = time.perf_counter()
-                            await asyncio.wait_for(
-                                client(ImportChatInviteRequest(invite_hash)),
-                                timeout=0.1
-                            )
+                            success = await try_join_chat(client, invite_hash)
                             join_time = (time.perf_counter() - join_start) * 1000
-                            print(f"{Fore.GREEN}✅ {detection_time:.2f}ms/{join_time:.2f}ms | t.me/+{invite_hash}{Style.RESET_ALL}")
-                        except Exception as e:
-                            print(f"{Fore.RED}❌ Failed to join t.me/+{invite_hash}: {str(e)}{Style.RESET_ALL}")
+                            
+                            if success:
+                                print(f"[+] Joined in {join_time:.2f}ms | Detection: {detection_time:.2f}ms")
             
             except Exception as e:
-                pass
+                print(f"[-] Error processing message: {str(e)}")
         
-        print("🤖 Monitoring for invite links... Press Ctrl+C to stop.")
+        print("[+] Monitoring for invite links...")
+        print("[*] Press Ctrl+C to stop.")
+        
         await client.run_until_disconnected()
         
     except Exception as e:
-        print(f"❌ Error: {str(e)}")
+        print(f"[-] Fatal error: {str(e)}")
         
 if __name__ == '__main__':
     asyncio.run(main())

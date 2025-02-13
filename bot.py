@@ -3,127 +3,213 @@ import re
 import asyncio
 import uuid
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from telethon import TelegramClient, events, Button
-from telethon.errors import SessionPasswordNeededError, PhoneCodeInvalidError
+from telethon.errors import SessionPasswordNeededError, FloodWaitError
 from telethon.sessions import StringSession
+from telethon.tl.custom.qrlogin import QRLogin
 from colorama import Fore, Style
 import subprocess
 import time
+import qrcode
+from io import BytesIO
+import base64
 from collections import OrderedDict
+import sys
 
 # Load environment variables
 load_dotenv()
 
-# Bot credentials (only needs bot token)
+# Bot credentials
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 API_ID = int(os.getenv('API_ID'))
 API_HASH = os.getenv('API_HASH')
 
-# Device Info for authentication
-DEVICE_MODEL = "Windows 10"
-SYSTEM_VERSION = "10.0"
-APP_VERSION = "1.0.0"
-LANG_CODE = 'en'
-SYSTEM_LANG_CODE = 'en'
-
 # Store user states and sessions
 user_states = {}
 user_processes = {}
+flood_wait_until = None
 
-ACCESS_CODE = "hilmiisawesome"  # Required access code
-
-# FAQ Content
-FAQ_TEXT = """❓ Frequently Asked Questions
-
-Q: How fast is the sniper?
-A: Our sniper is optimized for maximum speed, typically joining within 100-300ms of detecting an invite link.
-
-Q: Why am I not joining some groups?
-A: Several factors can affect success:
-• Invite link already expired
-• Group already full
-• You're rate limited by Telegram
-• Network latency issues
-
-Q: Is this safe to use?
-A: Yes, we use official Telegram APIs. However:
-• Use at your own risk
-• Don't share your session/access code
-• Avoid running multiple instances
-
-Q: What's the success rate?
-A: Success rates vary based on:
-• Your internet connection
-• Server location
-• Competition
-• Group settings
-
-Need more help? Contact @0xDeepSeek on Twitter"""
-
-# Disclaimer
-DISCLAIMER = """⚠️ DISCLAIMER
-
-By using this bot, you acknowledge and agree:
-
-1. This is an experimental tool with no guarantees of success
-2. Results may vary based on network conditions and competition
-3. We're not responsible for any account limitations or bans
-4. Use at your own risk and discretion
-5. No refunds for access codes
-
-Stay safe and happy sniping! 🎯"""
+ACCESS_CODE = "hilmiisawesome"
 
 class UserState:
     def __init__(self):
-        self.phone = None
         self.waiting_for_access_code = True
-        self.waiting_for_phone = False
-        self.waiting_for_code = False
-        self.waiting_for_2fa = False
+        self.waiting_for_qr_scan = False
         self.waiting_for_channel = False
         self.client = None
         self.session_string = None
-        self.code_request_time = None  # Track when code was requested
-        self.code_attempts = 0  # Track number of attempts
+        self.qr_message_id = None
+        self.qr_login = None
+        self.active_channel = None
+        self.process = None
+        self.sniper_id = None
+        self.sniper_running = False
 
-async def start_sniper_process(phone, session_string, channel):
-    """Start a new sniper process for a user"""
-    process = subprocess.Popen(
-        ['python', 'invite_sniper.py'],
-        env={
+async def generate_qr(url):
+    """Generate QR code image from URL"""
+    try:
+        # Create QR code
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            box_size=10,
+            border=4,
+        )
+        qr.add_data(url)
+        qr.make(fit=True)
+
+        # Create image
+        img = qr.make_image(fill_color="black", back_color="white")
+        
+        # Save to bytes
+        bio = BytesIO()
+        img.save(bio, format='PNG')
+        bio.seek(0)
+        
+        return bio
+    except Exception as e:
+        print(f"Error generating QR code: {str(e)}")
+        raise
+
+async def start_sniper(session_string, target_channel):
+    """Start a new sniper process"""
+    try:
+        # Create a unique ID for this sniper instance
+        sniper_id = str(uuid.uuid4())
+        
+        # Create a fresh environment dictionary
+        env = {}
+        
+        # Add only required variables
+        env.update({
             'API_ID': str(API_ID),
-            'API_HASH': API_HASH,
-            'SESSION_STRING': session_string,
-            'TARGET_CHANNEL': channel,
-            'PATH': os.environ['PATH']
-        }
-    )
-    return process
+            'API_HASH': str(API_HASH),
+            'SESSION_STRING': session_string,  # Pass session string directly
+            'TARGET_CHANNEL': str(target_channel),
+            'SNIPER_ID': str(sniper_id)
+        })
+        
+        print("Starting sniper with configuration:")
+        print(f"Target Channel: {env['TARGET_CHANNEL']}")
+        print(f"Session String Length: {len(env['SESSION_STRING'])}")
+        
+        # Start the sniper process with the clean environment
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,  # Use current Python interpreter
+            'invite_sniper.py',
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=os.getcwd()
+        )
+        
+        # Start output reader tasks
+        asyncio.create_task(read_output(process.stdout, "STDOUT"))
+        asyncio.create_task(read_output(process.stderr, "STDERR"))
+        
+        print(f"Started sniper process {sniper_id} for channel {target_channel}")
+        return process, sniper_id
+        
+    except Exception as e:
+        print(f"Error starting sniper: {str(e)}")
+        print(f"Error details: {repr(e)}")
+        raise
+
+async def read_output(pipe, name):
+    """Read output from a subprocess pipe"""
+    while True:
+        line = await pipe.readline()
+        if not line:
+            break
+        try:
+            print(f"[{name}] {line.decode().strip()}")
+        except Exception as e:
+            print(f"Error reading {name}: {str(e)}")
+
+async def check_qr_login(bot, chat_id, user_id, state):
+    """Check QR login status and handle session creation"""
+    try:
+        qr_login = state.qr_login
+        print(f"Starting QR login check for user {user_id}")
+        
+        # Wait for QR login (60 seconds timeout)
+        for _ in range(60):
+            if not state.waiting_for_qr_scan:
+                print("Login completed, stopping QR check")
+                return
+            
+            try:
+                # Check login status
+                print("Checking QR login status...")
+                status = await qr_login.wait(timeout=5)
+                print(f"QR login status: {status}")
+                
+                # Check if client is authorized
+                if await state.client.is_user_authorized():
+                    print("User is authorized!")
+                    state.session_string = state.client.session.save()
+                    state.waiting_for_qr_scan = False
+                    state.waiting_for_channel = True
+                    
+                    await bot.send_message(
+                        chat_id,
+                        "✅ Successfully logged in!\n\n"
+                        "🎯 Now, please enter the target channel username (e.g., @channel)\n\n"
+                        "ℹ️ Make sure you've already joined the channel you want to monitor."
+                    )
+                    print(f"Channel prompt sent to user {user_id}")
+                    return  # Exit immediately after successful login
+                
+            except asyncio.TimeoutError:
+                print("Timeout while waiting for QR login, continuing...")
+                pass
+            except Exception as e:
+                print(f"Error checking QR login status: {str(e)}")
+                
+            await asyncio.sleep(2)
+            
+        # If we get here, QR code check timeout
+        if state.waiting_for_qr_scan:
+            print("QR code check timeout")
+            await bot.edit_message(
+                chat_id,
+                state.qr_message_id,
+                "ℹ️ QR code check timeout.\n\n"
+                "If you've already scanned and approved the login, send /confirm\n"
+                "Otherwise, use /start to get a new QR code."
+            )
+            
+    except Exception as e:
+        print(f"Error in check_qr_login: {str(e)}")
+        await bot.send_message(
+            chat_id,
+            f"❌ Error during QR login: {str(e)}\n"
+            "Please use /start to try again."
+        )
 
 async def main():
     try:
         print("🚀 Starting bot...")
         
-        # Initialize bot client
+        # Initialize bot client with persistent session
         bot = TelegramClient(
-            StringSession(),
+            "bot.session",  # Persistent session file
             API_ID,
             API_HASH
         )
-        await bot.start(bot_token=BOT_TOKEN)
         
-        # Upload bot profile picture if not already set
         try:
-            await bot(UpdateProfilePhotoRequest(
-                await bot.upload_file('logo.png')
-            ))
-        except Exception as e:
-            print(f"Could not update profile picture: {e}")
-        
-        print("✅ Bot started successfully!")
-        
+            await bot.start(bot_token=BOT_TOKEN)
+            print("✅ Bot started successfully!")
+        except FloodWaitError as e:
+            wait_time = e.seconds
+            wait_until = datetime.now() + timedelta(seconds=wait_time)
+            print(f"⚠️ Need to wait {wait_time} seconds due to flood control.")
+            print(f"Please try again after {wait_until.strftime('%H:%M:%S')}")
+            return
+            
         @bot.on(events.NewMessage(pattern='/start'))
         async def start_command(event):
             user_id = event.sender_id
@@ -156,250 +242,176 @@ async def main():
                 buttons=buttons
             )
 
-        @bot.on(events.CallbackQuery(pattern=b"faq"))
-        async def faq_callback(event):
-            await event.answer()
-            await event.respond(FAQ_TEXT)
-
-        @bot.on(events.CallbackQuery(pattern=b"disclaimer"))
-        async def disclaimer_callback(event):
-            await event.answer()
-            await event.respond(DISCLAIMER)
-
-        @bot.on(events.NewMessage(pattern='/stop'))
-        async def stop_command(event):
+        @bot.on(events.NewMessage(pattern='/confirm'))
+        async def confirm_login(event):
             user_id = event.sender_id
-            if user_id in user_processes:
-                process = user_processes[user_id]
-                process.terminate()
-                del user_processes[user_id]
-                await event.respond(
-                    "✅ Sniper has been stopped.\n\n"
-                    "Use /start to begin a new session!"
-                )
-            else:
-                await event.respond("❌ No active sniper found.")
-
-        @bot.on(events.NewMessage(pattern='/resend'))
-        async def resend_code(event):
-            user_id = event.sender_id
-            if user_id not in user_states or not user_states[user_id].waiting_for_code:
-                await event.respond("⚠️ You can only use this command while waiting for a verification code.")
+            if user_id not in user_states:
+                await event.respond("⚠️ Please start over with /start")
                 return
                 
             state = user_states[user_id]
-            try:
-                # Reset code request time and attempts
-                state.code_request_time = time.time()
-                state.code_attempts = 0
+            if not state.waiting_for_qr_scan:
+                await event.respond("⚠️ This command is only valid during QR login.")
+                return
                 
-                # Request new code
-                await state.client.send_code_request(state.phone)
-                await event.respond(
-                    "📱 New verification code sent!\n\n"
-                    "Please enter the new code you received.\n"
-                    "⚠️ Note: Previous codes are now invalid."
-                )
+            try:
+                print(f"Manual confirmation requested by user {user_id}")
+                print(f"Client state: {state.client}")
+                
+                # Try to connect the client first
+                if not state.client.is_connected():
+                    print("Client not connected, attempting to connect...")
+                    await state.client.connect()
+                
+                # Check authorization
+                print("Checking authorization status...")
+                is_authorized = await state.client.is_user_authorized()
+                print(f"Authorization status: {is_authorized}")
+                
+                if is_authorized:
+                    print("User is authorized via manual confirmation!")
+                    state.session_string = state.client.session.save()
+                    state.waiting_for_qr_scan = False
+                    state.waiting_for_channel = True
+                    
+                    await event.respond(
+                        "✅ Successfully logged in!\n\n"
+                        "🎯 Now, please enter the target channel username (e.g., @channel)\n\n"
+                        "ℹ️ Make sure you've already joined the channel you want to monitor."
+                    )
+                else:
+                    print("Authorization check failed")
+                    # Try to get the QR login status
+                    if state.qr_login:
+                        try:
+                            status = await state.qr_login.wait(timeout=5)
+                            print(f"QR login status: {status}")
+                        except Exception as e:
+                            print(f"Error checking QR status: {e}")
+                    
+                    await event.respond(
+                        "❌ Login not detected.\n"
+                        "Let me try to reset the connection...\n"
+                        "Please wait a moment and try /confirm again."
+                    )
+                    
+                    # Try to reset the client
+                    try:
+                        print("Attempting to reset client connection...")
+                        await state.client.disconnect()
+                        await state.client.connect()
+                    except Exception as e:
+                        print(f"Error resetting connection: {e}")
+                    
             except Exception as e:
-                await event.respond(f"❌ Error sending new code: {str(e)}\nPlease start over with /start")
+                print(f"Error in confirm_login: {str(e)}")
+                await event.respond(
+                    "❌ Error checking login status.\n"
+                    "Please use /start to try again."
+                )
                 del user_states[user_id]
 
         @bot.on(events.NewMessage)
         async def message_handler(event):
-            if event.raw_text.startswith('/'):
-                return
+            if event.message.text.startswith('/'):
+                return  # Skip command messages
                 
             user_id = event.sender_id
+            chat_id = event.chat_id
+            message = event.raw_text.strip()
+            
             if user_id not in user_states:
-                return
-                
+                user_states[user_id] = UserState()
+            
             state = user_states[user_id]
             
             if state.waiting_for_access_code:
-                access_code = event.raw_text.strip()
-                if access_code == ACCESS_CODE:
+                if message == ACCESS_CODE:
+                    print(f"Access code verified for user {user_id}")
                     state.waiting_for_access_code = False
-                    state.waiting_for_phone = True
-                    await event.respond(
-                        "✅ Access code verified!\n\n"
-                        "🔐 Let's set up your secure session.\n"
-                        "Please send your phone number in international format (e.g., +1234567890)\n\n"
-                        "ℹ️ Your session will be used only on your dedicated sniper instance."
+                    
+                    # Create QR login session
+                    state.client = TelegramClient(
+                        StringSession(),
+                        API_ID,
+                        API_HASH,
+                        device_model="Windows",
+                        system_version="10",
+                        app_version="1.0",
+                        lang_code="en",
+                        system_lang_code="en"
                     )
+                    await state.client.connect()
+                    
+                    # Generate QR login
+                    state.qr_login = await state.client.qr_login()
+                    state.waiting_for_qr_scan = True
+                    
+                    try:
+                        # Generate QR code image
+                        qr_image = await generate_qr(state.qr_login.url)
+                        
+                        # Send QR code
+                        qr_message = await bot.send_message(
+                            chat_id,
+                            "🔐 Please scan this QR code with your Telegram app to login:\n\n" +
+                            "1. Open Telegram on your phone\n" +
+                            "2. Go to Settings > Devices > Link Desktop Device\n" +
+                            "3. Scan this QR code",
+                            file=qr_image
+                        )
+                        
+                        state.qr_message_id = qr_message.id
+                        print(f"QR login session created for user {user_id}")
+                        print(f"QR code sent to user {user_id}")
+                        
+                        # Start QR login check
+                        asyncio.create_task(check_qr_login(bot, chat_id, user_id, state))
+                        
+                    except Exception as e:
+                        print(f"Error sending QR code: {str(e)}")
+                        await bot.send_message(
+                            chat_id,
+                            "❌ Error generating QR code. Please use /start to try again."
+                        )
+                        state.waiting_for_qr_scan = False
+                        
                 else:
-                    await event.respond(
-                        "❌ Invalid access code!\n\n"
-                        "🔑 Please try again or contact @0xDeepSeek on Twitter (x.com/0xDeepSeek) to get a valid code.\n\n"
-                        "⚠️ Note: Access codes are case-sensitive."
-                    )
-                return
-            
-            elif state.waiting_for_phone:
-                phone = event.raw_text.strip()
-                state.phone = phone
-                state.waiting_for_phone = False
-                state.waiting_for_code = True
-                
-                # Initialize client for authentication with proper device info
-                client = TelegramClient(
-                    StringSession(),
-                    API_ID,
-                    API_HASH,
-                    device_model=DEVICE_MODEL,
-                    system_version=SYSTEM_VERSION,
-                    app_version=APP_VERSION,
-                    lang_code=LANG_CODE,
-                    system_lang_code=SYSTEM_LANG_CODE
-                )
-                
-                try:
-                    await client.connect()
-                    
-                    # Send code request with additional parameters
-                    await client.send_code_request(
-                        phone,
-                        force_sms=False
-                    )
-                    
-                    state.client = client
-                    state.code_request_time = time.time()
-                    state.code_attempts = 0
-                    
-                    await event.respond(
-                        "📱 Verification code sent!\n\n"
-                        "Please enter the code you received.\n"
-                        "(If you have 2FA enabled, you'll be asked for your password next)\n\n"
-                        "⚠️ Notes:\n"
-                        "• Code expires in 2 minutes\n"
-                        "• Use /resend if you need a new code\n"
-                        "• Never share this code with anyone!\n\n"
-                        "ℹ️ If you get a login alert, please approve it in your Telegram app."
-                    )
-                except Exception as e:
-                    await event.respond(f"❌ Error: {str(e)}\nPlease try again with a valid phone number.")
-                    state.waiting_for_phone = True
-                    
-            elif state.waiting_for_code:
-                try:
-                    code = event.raw_text.strip()
-                    
-                    # Check if code has expired (2 minutes)
-                    if time.time() - state.code_request_time > 120:
-                        await event.respond(
-                            "⚠️ This code has expired!\n\n"
-                            "Use /resend to get a new verification code, or\n"
-                            "Use /start to start over."
-                        )
-                        return
-                    
-                    # Track attempts
-                    state.code_attempts += 1
-                    if state.code_attempts >= 3:
-                        await event.respond(
-                            "❌ Too many invalid attempts!\n\n"
-                            "Use /resend to get a new code, or\n"
-                            "Use /start to start over."
-                        )
-                        return
-                    
-                    await state.client.sign_in(state.phone, code)
-                    
-                    # Save session string
-                    state.session_string = state.client.session.save()
-                    state.waiting_for_code = False
-                    state.waiting_for_channel = True
-                    
-                    await event.respond(
-                        "✅ Successfully authenticated!\n\n"
-                        "🎯 Almost there! Now, please enter the target channel username (e.g., @channel)\n\n"
-                        "ℹ️ Make sure you've already joined the channel you want to monitor."
-                    )
-                    
-                except SessionPasswordNeededError:
-                    state.waiting_for_code = False
-                    state.waiting_for_2fa = True
-                    await event.respond(
-                        "🔐 2FA Detected!\n\n"
-                        "Please enter your 2FA password:\n\n"
-                        "⚠️ Note: This is your account's 2FA password, not the bot access code."
-                    )
-                except PhoneCodeInvalidError:
-                    remaining_attempts = 3 - state.code_attempts
-                    await event.respond(
-                        f"❌ Invalid code! {remaining_attempts} attempts remaining.\n\n"
-                        "Please try again, or:\n"
-                        "• Use /resend to get a new code\n"
-                        "• Use /start to start over"
-                    )
-                except Exception as e:
-                    await event.respond(
-                        f"❌ Error: {str(e)}\n\n"
-                        "Please:\n"
-                        "• Use /resend to get a new code\n"
-                        "• Use /start to start over"
-                    )
-                    
-            elif state.waiting_for_2fa:
-                try:
-                    password = event.raw_text.strip()
-                    await state.client.sign_in(password=password)
-                    
-                    # Save session string
-                    state.session_string = state.client.session.save()
-                    state.waiting_for_2fa = False
-                    state.waiting_for_channel = True
-                    
-                    await event.respond(
-                        "✅ 2FA Verified!\n\n"
-                        "🎯 Almost there! Now, please enter the target channel username (e.g., @channel)\n\n"
-                        "ℹ️ Make sure you've already joined the channel you want to monitor."
-                    )
-                    
-                except Exception as e:
-                    await event.respond(f"❌ Error: {str(e)}\nPlease start over with /start")
-                    del user_states[user_id]
+                    await bot.send_message(chat_id, "❌ Invalid access code. Please try again.")
                     
             elif state.waiting_for_channel:
-                channel = event.raw_text.strip()
-                
-                if not channel.startswith('@'):
-                    await event.respond("❌ Please provide a valid channel username starting with @")
+                if not message.startswith('@'):
+                    await bot.send_message(
+                        chat_id,
+                        "❌ Invalid channel format. Please enter a channel username starting with @"
+                    )
                     return
+                    
+                print(f"Processing channel input from user {user_id}")
                 
                 try:
-                    # Stop existing process if any
-                    if user_id in user_processes:
-                        user_processes[user_id].terminate()
+                    # Start the sniper process
+                    state.process, state.sniper_id = await start_sniper(state.session_string, message)
+                    print(f"Sniper started for user {user_id} on channel {message}")
                     
-                    # Start new sniper process
-                    process = await start_sniper_process(
-                        state.phone,
-                        state.session_string,
-                        channel
+                    await bot.send_message(
+                        chat_id,
+                        "✅ Sniper started successfully!\n\n" +
+                        "I will now monitor the channel for invite links and automatically join them.\n\n" +
+                        "You can stop the sniper at any time by sending /stop"
                     )
-                    user_processes[user_id] = process
                     
-                    await event.respond(
-                        "🎯 Sniper deployed successfully!\n\n"
-                        "✅ Your dedicated sniper is now monitoring the channel.\n"
-                        "⚡️ Average response time: 100-300ms\n\n"
-                        "📊 Performance Tips:\n"
-                        "• Keep your internet connection stable\n"
-                        "• Avoid running multiple instances\n"
-                        "• Monitor CPU and memory usage\n\n"
-                        "⚠️ Remember: Success rates may vary based on:\n"
-                        "• Network conditions\n"
-                        "• Server location\n"
-                        "• Competition\n"
-                        "• Group settings\n\n"
-                        "Use /stop to stop the sniper when you're done."
-                    )
+                    state.waiting_for_channel = False
+                    state.sniper_running = True
                     
                 except Exception as e:
-                    await event.respond(f"❌ Error starting sniper: {str(e)}")
-                
-                del user_states[user_id]
-        
+                    print(f"Error starting sniper: {str(e)}")
+                    await bot.send_message(
+                        chat_id,
+                        f"❌ Error starting sniper: {str(e)}\n" +
+                        "Please try again with a different channel or use /start to restart."
+                    )
+                    
         print("🤖 Bot is ready! Press Ctrl+C to stop.")
         await bot.run_until_disconnected()
         
@@ -407,5 +419,4 @@ async def main():
         print(f"❌ Error: {str(e)}")
         
 if __name__ == '__main__':
-    # Clean up any existing processes on restart
     asyncio.run(main())
