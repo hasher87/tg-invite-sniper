@@ -132,65 +132,47 @@ async def read_output(pipe, name):
             print(f"Error reading {name}: {str(e)}")
 
 async def check_qr_login(bot, chat_id, user_id, state):
-    """Check QR login status and handle session creation"""
+    """Check QR login status periodically"""
     try:
-        qr_login = state.qr_login
-        print(f"Starting QR login check for user {user_id}")
-        
-        # Wait for QR login (60 seconds timeout)
-        for _ in range(60):
-            if not state.waiting_for_qr_scan:
-                print("Login completed, stopping QR check")
-                return
-            
+        while state.waiting_for_qr_scan:
             try:
-                # Check login status
-                print("Checking QR login status...")
-                status = await qr_login.wait(timeout=5)
-                print(f"QR login status: {status}")
-                
-                # Check if client is authorized
-                if await state.client.is_user_authorized():
-                    print("User is authorized!")
+                # Check if QR code was accepted
+                result = await state.qr_login.wait(10)  # Wait for 10 seconds
+                if result:
+                    # QR code accepted, get the session string
                     state.session_string = state.client.session.save()
-                    state.waiting_for_qr_scan = False
-                    state.waiting_for_channel = True
+                    print(f"QR login successful for user {user_id}")
+                    print(f"Session string length: {len(state.session_string)}")
                     
-                    await bot.send_message(
+                    # Clear states
+                    state.waiting_for_qr_scan = False
+                    state.waiting_for_access_code = False
+                    
+                    # Update QR message
+                    await bot.edit_message(
                         chat_id,
-                        "✅ Successfully logged in!\n\n"
-                        "🎯 Now, please enter the target channel username (e.g., @channel)\n\n"
-                        "ℹ️ Make sure you've already joined the channel you want to monitor."
+                        state.qr_message_id,
+                        "✅ Login successful! Now please send me the channel username to monitor (e.g. @channel)"
                     )
-                    print(f"Channel prompt sent to user {user_id}")
-                    return  # Exit immediately after successful login
-                
+                    
+                    # Set state for channel input
+                    state.waiting_for_channel = True
+                    break
+                    
             except asyncio.TimeoutError:
-                print("Timeout while waiting for QR login, continuing...")
-                pass
+                continue
             except Exception as e:
-                print(f"Error checking QR login status: {str(e)}")
+                print(f"Error checking QR login: {str(e)}")
+                await bot.send_message(
+                    chat_id,
+                    "❌ Error during login. Please use /start to try again."
+                )
+                state.waiting_for_qr_scan = False
+                break
                 
-            await asyncio.sleep(2)
-            
-        # If we get here, QR code check timeout
-        if state.waiting_for_qr_scan:
-            print("QR code check timeout")
-            await bot.edit_message(
-                chat_id,
-                state.qr_message_id,
-                "ℹ️ QR code check timeout.\n\n"
-                "If you've already scanned and approved the login, send /confirm\n"
-                "Otherwise, use /start to get a new QR code."
-            )
-            
     except Exception as e:
-        print(f"Error in check_qr_login: {str(e)}")
-        await bot.send_message(
-            chat_id,
-            f"❌ Error during QR login: {str(e)}\n"
-            "Please use /start to try again."
-        )
+        print(f"Error in QR login check: {str(e)}")
+        state.waiting_for_qr_scan = False
 
 async def main():
     try:
@@ -275,7 +257,7 @@ async def main():
                     print("User is authorized via manual confirmation!")
                     state.session_string = state.client.session.save()
                     state.waiting_for_qr_scan = False
-                    state.waiting_for_channel = True
+                    state.waiting_for_access_code = False
                     
                     await event.respond(
                         "✅ Successfully logged in!\n\n"
@@ -316,105 +298,110 @@ async def main():
 
         @bot.on(events.NewMessage)
         async def message_handler(event):
-            if event.message.text.startswith('/'):
-                return  # Skip command messages
+            """Handle user messages"""
+            try:
+                if event.message.text.startswith('/'):
+                    return  # Skip command messages
+                    
+                user_id = event.sender_id
+                chat_id = event.chat_id
+                message = event.raw_text.strip()
                 
-            user_id = event.sender_id
-            chat_id = event.chat_id
-            message = event.raw_text.strip()
-            
-            if user_id not in user_states:
-                user_states[user_id] = UserState()
-            
-            state = user_states[user_id]
-            
-            if state.waiting_for_access_code:
-                if message == ACCESS_CODE:
-                    print(f"Access code verified for user {user_id}")
-                    state.waiting_for_access_code = False
-                    
-                    # Create QR login session
-                    state.client = TelegramClient(
-                        StringSession(),
-                        API_ID,
-                        API_HASH,
-                        device_model="Windows",
-                        system_version="10",
-                        app_version="1.0",
-                        lang_code="en",
-                        system_lang_code="en"
-                    )
-                    await state.client.connect()
-                    
-                    # Generate QR login
-                    state.qr_login = await state.client.qr_login()
-                    state.waiting_for_qr_scan = True
-                    
-                    try:
-                        # Generate QR code image
-                        qr_image = await generate_qr(state.qr_login.url)
+                if user_id not in user_states:
+                    user_states[user_id] = UserState()
+                
+                state = user_states[user_id]
+                
+                if state.waiting_for_access_code:
+                    if message == ACCESS_CODE:
+                        print(f"Access code verified for user {user_id}")
+                        state.waiting_for_access_code = False
                         
-                        # Send QR code
-                        qr_message = await bot.send_message(
-                            chat_id,
-                            "🔐 Please scan this QR code with your Telegram app to login:\n\n" +
-                            "1. Open Telegram on your phone\n" +
-                            "2. Go to Settings > Devices > Link Desktop Device\n" +
-                            "3. Scan this QR code",
-                            file=qr_image
+                        # Create QR login session
+                        state.client = TelegramClient(
+                            StringSession(),
+                            API_ID,
+                            API_HASH,
+                            device_model="Windows",
+                            system_version="10",
+                            app_version="1.0",
+                            lang_code="en",
+                            system_lang_code="en"
                         )
+                        await state.client.connect()
                         
-                        state.qr_message_id = qr_message.id
-                        print(f"QR login session created for user {user_id}")
-                        print(f"QR code sent to user {user_id}")
+                        # Generate QR login
+                        state.qr_login = await state.client.qr_login()
+                        state.waiting_for_qr_scan = True
                         
-                        # Start QR login check
-                        asyncio.create_task(check_qr_login(bot, chat_id, user_id, state))
+                        try:
+                            # Generate QR code image
+                            qr_image = await generate_qr(state.qr_login.url)
+                            
+                            # Send QR code
+                            qr_message = await bot.send_message(
+                                chat_id,
+                                "🔐 Please scan this QR code with your Telegram app to login:\n\n" +
+                                "1. Open Telegram on your phone\n" +
+                                "2. Go to Settings > Devices > Link Desktop Device\n" +
+                                "3. Scan this QR code",
+                                file=qr_image
+                            )
+                            
+                            state.qr_message_id = qr_message.id
+                            print(f"QR login session created for user {user_id}")
+                            print(f"QR code sent to user {user_id}")
+                            
+                            # Start QR login check
+                            asyncio.create_task(check_qr_login(bot, chat_id, user_id, state))
+                            
+                        except Exception as e:
+                            print(f"Error sending QR code: {str(e)}")
+                            await bot.send_message(
+                                chat_id,
+                                "❌ Error generating QR code. Please use /start to try again."
+                            )
+                            state.waiting_for_qr_scan = False
+                            
+                    else:
+                        await bot.send_message(chat_id, "❌ Invalid access code. Please try again.")
                         
-                    except Exception as e:
-                        print(f"Error sending QR code: {str(e)}")
+                elif state.waiting_for_channel and not state.waiting_for_access_code and not state.waiting_for_qr_scan:
+                    if not message.startswith('@'):
                         await bot.send_message(
                             chat_id,
-                            "❌ Error generating QR code. Please use /start to try again."
+                            "❌ Invalid channel format. Please enter a channel username starting with @"
                         )
-                        state.waiting_for_qr_scan = False
+                        return
                         
-                else:
-                    await bot.send_message(chat_id, "❌ Invalid access code. Please try again.")
+                    print(f"Processing channel input from user {user_id}")
                     
-            elif state.waiting_for_channel:
-                if not message.startswith('@'):
-                    await bot.send_message(
-                        chat_id,
-                        "❌ Invalid channel format. Please enter a channel username starting with @"
-                    )
-                    return
-                    
-                print(f"Processing channel input from user {user_id}")
+                    try:
+                        # Start the sniper process with chat_id
+                        state.process, state.sniper_id = await start_sniper(state.session_string, message, chat_id)
+                        print(f"Sniper started for user {user_id} on channel {message}")
+                        
+                        await bot.send_message(
+                            chat_id,
+                            "✅ Sniper started successfully!\n\n" +
+                            "I will now monitor the channel for invite links and automatically join them.\n\n" +
+                            "You can stop the sniper at any time by sending /stop"
+                        )
+                        
+                        state.waiting_for_channel = False
+                        state.sniper_running = True
+                        
+                    except Exception as e:
+                        print(f"Error starting sniper: {str(e)}")
+                        await bot.send_message(
+                            chat_id,
+                            f"❌ Error starting sniper: {str(e)}\n" +
+                            "Please try again with a different channel or use /start to restart."
+                        )
+                        
+            except Exception as e:
+                print(f"Error in message_handler: {str(e)}")
                 
-                try:
-                    # Start the sniper process with chat_id
-                    state.process, state.sniper_id = await start_sniper(state.session_string, message, chat_id)
-                    print(f"Sniper started for user {user_id} on channel {message}")
-                    
-                    await bot.send_message(
-                        chat_id,
-                        "✅ Sniper started successfully!\n\n" +
-                        "I will now monitor the channel for invite links and automatically join them.\n\n" +
-                        "You can stop the sniper at any time by sending /stop"
-                    )
-                    
-                    state.waiting_for_channel = False
-                    state.sniper_running = True
-                    
-                except Exception as e:
-                    print(f"Error starting sniper: {str(e)}")
-                    await bot.send_message(
-                        chat_id,
-                        f"❌ Error starting sniper: {str(e)}\n" +
-                        "Please try again with a different channel or use /start to restart."
-                    )
-                    
         print("🤖 Bot is ready! Press Ctrl+C to stop.")
         await bot.run_until_disconnected()
         
