@@ -316,14 +316,28 @@ async def main():
                     
                 state = user_states[user_id]
                 
-                if not state.sniper_running or not state.process:
+                if not state.sniper_running:
                     await event.respond("❌ No active sniper found. Use /start to begin.")
                     return
                     
                 try:
-                    # Kill the sniper process
-                    state.process.kill()
-                    await state.process.wait()  # Wait for process to end
+                    if state.process:
+                        try:
+                            # Try to terminate gracefully first
+                            state.process.terminate()
+                            try:
+                                # Wait for up to 5 seconds for process to end
+                                await asyncio.wait_for(state.process.wait(), timeout=5.0)
+                            except asyncio.TimeoutError:
+                                # If process doesn't end in 5 seconds, force kill it
+                                state.process.kill()
+                                await state.process.wait()
+                        except ProcessLookupError:
+                            # Process already ended
+                            pass
+                        except Exception as e:
+                            print(f"Error terminating process: {str(e)}")
+                            
                     print(f"Stopped sniper process for user {user_id}")
                     
                     # Reset state
@@ -333,6 +347,8 @@ async def main():
                     state.waiting_for_channel = False
                     state.waiting_for_access_code = False
                     state.waiting_for_qr_scan = False
+                    state.target_channel = None
+                    state.start_time = None
                     
                     await event.respond(
                         "✅ Sniper stopped successfully!\n\n"
@@ -341,15 +357,20 @@ async def main():
                     
                 except Exception as e:
                     print(f"Error stopping sniper: {str(e)}")
+                    # Reset state anyway to allow restart
+                    state.sniper_running = False
+                    state.process = None
+                    state.sniper_id = None
                     await event.respond(
-                        f"❌ Error stopping sniper: {str(e)}\n"
-                        "Please try again or restart the bot."
+                        "⚠️ Sniper stopped with warnings.\n"
+                        "The process may have already ended.\n\n"
+                        "Use /start to start a new session."
                     )
                     
             except Exception as e:
                 print(f"Error in stop command: {str(e)}")
                 await event.respond("❌ An error occurred. Please try again.")
-
+        
         @bot.on(events.NewMessage(pattern='/status'))
         async def status_command(event):
             """Check sniper status"""
