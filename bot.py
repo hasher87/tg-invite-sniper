@@ -312,6 +312,10 @@ async def main():
                 
                 state = user_states[user_id]
                 
+                # Only process messages if we're in a valid state
+                if state.sniper_running:
+                    return  # Ignore messages if sniper is already running
+                    
                 if state.waiting_for_access_code:
                     if message == ACCESS_CODE:
                         print(f"Access code verified for user {user_id}")
@@ -366,7 +370,7 @@ async def main():
                     else:
                         await bot.send_message(chat_id, "❌ Invalid access code. Please try again.")
                         
-                elif state.waiting_for_channel and not state.waiting_for_access_code and not state.waiting_for_qr_scan:
+                elif state.waiting_for_channel:
                     if not message.startswith('@'):
                         await bot.send_message(
                             chat_id,
