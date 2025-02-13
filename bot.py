@@ -124,7 +124,60 @@ async def read_output(pipe, name):
         if not line:
             break
         try:
-            print(f"[{name}] {line.decode().strip()}")
+            line_text = line.decode().strip()
+            print(f"[{name}] {line_text}")
+            
+            # Send notifications for important events
+            if name == "STDOUT":
+                if "Found invite:" in line_text:
+                    invite_hash = line_text.split("Found invite:", 1)[1].strip()
+                    for user_id, state in user_states.items():
+                        if state.sniper_running:
+                            await bot.send_message(
+                                user_id,
+                                f"🔍 Found invite link!\n" +
+                                f"⚡️ Processing: {invite_hash}"
+                            )
+                
+                elif "Successfully joined" in line_text:
+                    # Extract info from subsequent lines
+                    title = line_text.split("Successfully joined", 1)[1].strip().strip('!')
+                    for user_id, state in user_states.items():
+                        if state.sniper_running:
+                            # Wait for the next two lines which contain timing info
+                            join_time_line = (await pipe.readline()).decode().strip()
+                            detection_line = (await pipe.readline()).decode().strip()
+                            stats_line = (await pipe.readline()).decode().strip()
+                            
+                            # Extract timing information
+                            join_time = join_time_line.split("Joined in", 1)[1].strip()
+                            detection_time = detection_line.split("Detection:", 1)[1].strip()
+                            stats = stats_line.split("Stats:", 1)[1].strip()
+                            
+                            await bot.send_message(
+                                user_id,
+                                f"✅ Successfully joined {title}!\n\n" +
+                                f"⚡️ Join Time: {join_time}\n" +
+                                f"🎯 Detection: {detection_time}\n" +
+                                f"📊 {stats}"
+                            )
+                
+                elif "Failed to join" in line_text:
+                    # Extract timing info
+                    join_time = line_text.split("Failed to join after", 1)[1].strip()
+                    for user_id, state in user_states.items():
+                        if state.sniper_running:
+                            # Get detection time from next line
+                            detection_line = (await pipe.readline()).decode().strip()
+                            detection_time = detection_line.split("Detection:", 1)[1].strip()
+                            
+                            await bot.send_message(
+                                user_id,
+                                f"❌ Failed to join!\n\n" +
+                                f"⏱ Attempt took: {join_time}\n" +
+                                f"🎯 Detection: {detection_time}"
+                            )
+                
         except Exception as e:
             print(f"Error reading {name}: {str(e)}")
 

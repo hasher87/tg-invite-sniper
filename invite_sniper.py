@@ -48,25 +48,30 @@ async def try_join_chat(client, invite_hash, max_retries=3):
             # First check if the invite is valid
             try:
                 print(f"[+] Checking invite validity: {invite_hash}")
-                await client(CheckChatInviteRequest(invite_hash))
-                print("[+] Invite is valid")
+                invite_info = await client(CheckChatInviteRequest(invite_hash))
+                title = getattr(invite_info, 'title', 'Unknown Group')
+                participants = getattr(invite_info, 'participants_count', 0)
+                print(f"[+] Invite is valid - {title} ({participants} members)")
+                return True, invite_info
             except Exception as e:
                 print(f"[-] Invalid invite link: {str(e)}")
-                return False
+                return False, None
 
             # Try to join
             print("[*] Attempting to join...")
-            await client(ImportChatInviteRequest(invite_hash))
-            print("[+] Successfully joined!")
-            return True
+            result = await client(ImportChatInviteRequest(invite_hash))
+            chat = getattr(result, 'chats', [{}])[0]
+            title = getattr(chat, 'title', 'Unknown Group')
+            print(f"[+] Successfully joined {title}!")
+            return True, result
             
         except UserAlreadyParticipantError:
             print("[!] Already a member")
-            return False
+            return False, None
             
         except InviteHashExpiredError:
             print("[-] Invite expired")
-            return False
+            return False, None
             
         except FloodWaitError as e:
             wait_time = e.seconds
@@ -80,9 +85,9 @@ async def try_join_chat(client, invite_hash, max_retries=3):
             if attempt < max_retries - 1:
                 await asyncio.sleep(0.5)
                 continue
-            return False
+            return False, None
     
-    return False
+    return False, None
 
 async def main():
     try:
@@ -144,11 +149,25 @@ async def main():
                             print(f"[+] Found invite: {invite_hash}")
                             
                             join_start = time.perf_counter()
-                            success = await try_join_chat(client, invite_hash)
+                            success, result = await try_join_chat(client, invite_hash)
                             join_time = (time.perf_counter() - join_start) * 1000
+                            detection_ms = (join_start - detection_time) * 1000
                             
                             if success:
-                                print(f"[+] Joined in {join_time:.2f}ms | Detection: {detection_time:.2f}ms")
+                                # Get chat info
+                                if isinstance(result, dict):
+                                    title = result.get('title', 'Unknown Group')
+                                    participants = result.get('participants_count', 0)
+                                else:
+                                    title = getattr(result, 'title', 'Unknown Group')
+                                    participants = getattr(result, 'participants_count', 0)
+                                
+                                print(f"[+] Joined in {join_time:.1f}ms!")
+                                print(f"[+] Detection: {detection_ms:.1f}ms")
+                                print(f"[+] Stats: {title} ({participants} members)")
+                            else:
+                                print(f"[-] Failed to join after {join_time:.1f}ms")
+                                print(f"[+] Detection: {detection_ms:.1f}ms")
             
             except Exception as e:
                 print(f"[-] Error processing message: {str(e)}")
