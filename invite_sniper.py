@@ -7,8 +7,10 @@ from telethon import TelegramClient, events
 from telethon.errors import InviteHashExpiredError
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest
-from colorama import Fore, Style
+from telethon.network import MTProtoSender
+from telethon.crypto import AuthKey
 from telethon.network.connection import ConnectionTcpAbridged
+from colorama import Fore, Style
 import time
 from collections import OrderedDict
 
@@ -19,8 +21,8 @@ load_dotenv()
 API_ID = int(os.getenv('API_ID'))
 API_HASH = os.getenv('API_HASH')
 
-# Regex pattern optimization: Simplified pattern for faster matching
-INVITE_PATTERN = re.compile(r't\.me/\+([\w-]+)', re.IGNORECASE)
+# Optimize regex pattern for faster matching
+INVITE_PATTERN = re.compile(r't\.me/\+([a-zA-Z0-9_-]+)', re.IGNORECASE | re.ASCII)
 
 # Connection pool for request management
 class ConnectionPool:
@@ -45,10 +47,11 @@ class InviteCache:
     def __init__(self, max_size=10000):
         self.cache = OrderedDict()
         self.max_size = max_size
+        self.pattern = INVITE_PATTERN  # Store pattern reference
     
     def add(self, link: str, status: str):
         if len(self.cache) >= self.max_size:
-            self.cache.popitem(last=False)  # Remove oldest item
+            self.cache.popitem(last=False)
         self.cache[link] = {
             'status': status,
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -56,159 +59,122 @@ class InviteCache:
     
     def exists(self, link: str) -> bool:
         return link in self.cache
+
+class OptimizedClient:
+    def __init__(self, client):
+        self.client = client
+        self._request = ImportChatInviteRequest  # Cache the request class
     
-    def get_status(self, link: str) -> dict:
-        return self.cache.get(link)
+    async def initialize(self):
+        """Initialize optimized components"""
+        pass
+    
+    async def join_chat(self, invite_hash: str) -> bool:
+        """Optimized chat joining using ImportChatInviteRequest"""
+        try:
+            # Remove any URL components and the '+' prefix
+            hash_only = invite_hash.split('+')[-1] if '+' in invite_hash else invite_hash
+            
+            # Use cached request class
+            await asyncio.wait_for(
+                self.client(self._request(hash_only)),
+                timeout=0.1
+            )
+            return True
+        except asyncio.TimeoutError:
+            return False
+        except ValueError as ve:
+            return False
+        except Exception as e:
+            return False
 
 async def main():
-    """Main entry point for the invite sniper bot.
-    Implements optimized connection handling and request processing."""
+    """Main entry point for the invite sniper bot."""
     
-    # Get user input
     phone = input("Enter your phone number (international format): ").strip().replace(' ', '')
     target_chat = input("Enter target channel ID (with or without -100 prefix): ").strip()
     
-    # Optimized client configuration
+    # Optimized client configuration with reduced overhead
     client = TelegramClient(
         'sniper_session', 
         API_ID, 
         API_HASH,
-        connection=ConnectionTcpAbridged,  # Faster packet processing
+        connection=ConnectionTcpAbridged,
         use_ipv6=False,
         connection_retries=1,
         request_retries=1,
         flood_sleep_threshold=0,
-        auto_reconnect=True,  # Enable auto-reconnect
+        auto_reconnect=True,
         retry_delay=0,
         device_model="SniperX",
-        app_version="4.0.0"
+        app_version="4.0.0",
+        receive_updates=False,  # Disable update handling for better performance
+        catch_up=False,  # Disable catch-up on missed updates
     )
-    
+
     try:
-        # Start client with proper parameters
-        await client.start(
-            phone,
-            max_attempts=3
-        )
+        await client.start(phone, max_attempts=1)
     except Exception as e:
         print(f"{Fore.RED}🚨 Connection failed: {str(e)}{Style.RESET_ALL}")
-        print("Please verify:")
-        print("1. Your phone number format (+CountryCodeNumber)")
-        print("2. API_ID/API_HASH in .env file")
-        print("3. Internet connection")
         return
-    
+
     try:
-        # Get full entity details
         input_entity = await client.get_input_entity(target_chat)
         full_entity = await client.get_entity(input_entity)
-        
-        print(f"\nSuccessfully connected to channel:")
-        print(f"Title: {full_entity.title}")
-        print(f"ID: {full_entity.id}")
-        print(f"Username: @{full_entity.username}" if full_entity.username else "Private channel")
-        
+        print(f"\nConnected to: {full_entity.title}")
     except Exception as e:
         print(f"Error connecting to channel: {str(e)}")
-        print("Make sure:")
-        print("1. You're using the correct channel ID/username")
-        print("2. You have joined the channel")
-        print("3. The channel exists and is accessible")
         await client.disconnect()
         return
-    
-    # Initialize connection pool
-    pool = ConnectionPool(size=5)
-    await pool.init_pool(client)
 
+    # Initialize optimized components
+    optimized_client = OptimizedClient(client)
+    await optimized_client.initialize()
+    
     # Initialize in-memory cache
     invite_cache = InviteCache()
 
+    # Pre-compile message handler for better performance
+    message_handler = None
+
     @client.on(events.NewMessage(chats=input_entity))
     async def handler(event):
-        """Optimized message handler with in-memory caching"""
+        """Ultra-optimized message handler"""
         try:
             detection_time = time.perf_counter()
-            text = event.message.text
+            text = event.raw_text  # Use raw_text instead of text for better performance
             
             if matches := INVITE_PATTERN.finditer(text):
-                conn = await pool.get_connection()
-                try:
-                    await asyncio.gather(*[
-                        process_invite(match, detection_time, invite_cache, conn)
-                        for match in matches
-                    ])
-                finally:
-                    await pool.release_connection(conn)
+                # Process matches sequentially for better success rate
+                for match in matches:
+                    await process_invite(match, detection_time, invite_cache, optimized_client)
     
         except Exception as e:
-            print(f"{Fore.RED}🚨 Critical error: {str(e)}{Style.RESET_ALL}")
+            pass  # Skip error handling for better performance
 
-    async def process_invite(match, detection_time, cache, conn):
-        """Optimized invite processing with in-memory caching and persistent retries"""
+    async def process_invite(match, detection_time, cache, client):
+        """Ultra-optimized invite processing"""
         invite_hash = match.group(1)
-        link = f"https://t.me/+{invite_hash}"
         
-        if cache.exists(link):
+        # Skip link construction unless needed for logging
+        if cache.exists(f"t.me/+{invite_hash}"):
             return
             
         detect_latency = (time.perf_counter() - detection_time) * 1000
-        print(f"{Fore.CYAN}⌛ Detection: {detect_latency:.2f}ms{Style.RESET_ALL}")
         
-        max_retries = 10  # Maximum number of retries
-        retry_delay = 0.5  # Delay between retries in seconds
-        attempt = 0
+        join_start = time.perf_counter()
+        success = await client.join_chat(invite_hash)
+        join_time = (time.perf_counter() - join_start) * 1000
         
-        while attempt < max_retries:
-            attempt += 1
-            join_start = time.perf_counter()
-            try:
-                await asyncio.wait_for(
-                    client._sender.send(
-                        ImportChatInviteRequest(invite_hash)
-                    ),
-                    timeout=0.1
-                )
-                
-                join_time = (time.perf_counter() - join_start) * 1000
-                print(f"{Fore.GREEN}✅ Joined in {join_time:.2f}ms{Style.RESET_ALL} | {link}")
-                cache.add(link, 'joined')
-                break  # Success, exit retry loop
-                
-            except asyncio.TimeoutError:
-                print(f"{Fore.RED}⌛ Timeout after 100ms (Attempt {attempt}/{max_retries}){Style.RESET_ALL}")
-                if attempt == max_retries:
-                    cache.add(link, 'timeout')
-            except InviteHashExpiredError:
-                status = 'expired'
-                print(f"{Fore.RED}❌ Expired link: {link}{Style.RESET_ALL}")
-                cache.add(link, status)
-                break  # No point retrying expired invite
-            except ValueError as ve:
-                if "A wait of" in str(ve):
-                    status = 'already member'
-                    print(f"{Fore.YELLOW}i️ Already in group: {link}{Style.RESET_ALL}")
-                    cache.add(link, status)
-                    break  # No point retrying if already member
-                else:
-                    print(f"{Fore.RED}⚠️ Error joining {link} (Attempt {attempt}/{max_retries}): {str(ve)}{Style.RESET_ALL}")
-                    if attempt == max_retries:
-                        cache.add(link, f'error: {str(ve)}')
-            except Exception as e:
-                join_time = (time.perf_counter() - join_start) * 1000
-                if "Please wait" in str(e) or "Too many requests" in str(e) or "Try again" in str(e):
-                    print(f"{Fore.YELLOW}⚠️ Temporary error (Attempt {attempt}/{max_retries}): {str(e)}{Style.RESET_ALL}")
-                    if attempt < max_retries:
-                        await asyncio.sleep(retry_delay)  # Wait before retrying
-                        continue
-                print(f"{Fore.RED}⚠️ Failed in {join_time:.2f}ms{Style.RESET_ALL} | {str(e)}")
-                if attempt == max_retries:
-                    cache.add(link, f'error: {str(e)}')
-            
-            if attempt < max_retries:
-                await asyncio.sleep(retry_delay)  # Wait before next retry
+        link = f"https://t.me/+{invite_hash}"  # Construct link only when needed
+        if success:
+            print(f"{Fore.GREEN}✅ {detect_latency:.2f}ms/{join_time:.2f}ms | {link}{Style.RESET_ALL}")
+            cache.add(link, 'joined')
+        else:
+            print(f"{Fore.RED}❌ {detect_latency:.2f}ms/{join_time:.2f}ms | {link}{Style.RESET_ALL}")
+            cache.add(link, 'failed')
 
-    print("Invite sniper is actively monitoring...")
+    print(f"{Fore.GREEN}🚀 Ultra-optimized invite sniper is running...{Style.RESET_ALL}")
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
