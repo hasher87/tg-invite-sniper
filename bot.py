@@ -68,15 +68,10 @@ async def generate_qr(url):
         # Create bytes buffer
         buffer = BytesIO()
         # Save as PNG with maximum quality
-        img.save(buffer, format='PNG', quality=100)
+        img.save(buffer, format='PNG')
         buffer.seek(0)
         
-        # Create file-like object with name and MIME type
-        return InputFile(
-            buffer,
-            filename='qr_login.png',
-            mime_type='image/png'
-        )
+        return buffer
         
     except Exception as e:
         print(f"Error generating QR code: {str(e)}")
@@ -86,12 +81,12 @@ async def send_qr_code(bot, chat_id, qr_login):
     """Send QR code with proper formatting"""
     try:
         # Generate QR code image
-        qr_image = await generate_qr(qr_login.url)
+        qr_buffer = await generate_qr(qr_login.url)
         
         # Send QR code with instructions
         qr_message = await bot.send_file(
             chat_id,
-            qr_image,
+            qr_buffer,
             caption=(
                 "🔐 **Scan QR Code to Login**\n\n"
                 "1️⃣ Open Telegram on your phone\n"
@@ -101,11 +96,8 @@ async def send_qr_code(bot, chat_id, qr_login):
                 "⏳ Code expires in 30 seconds..."
             ),
             parse_mode='md',
-            force_document=False,  # Send as image, not document
-            attributes=[
-                DocumentAttributeFilename("qr_login.png"),
-                DocumentAttributeImageSize(512, 512)
-            ]
+            file_name='qr_login.png',  
+            force_document=False  
         )
         
         return qr_message
@@ -256,6 +248,7 @@ async def main():
                     [Button.inline("🚀 Start Sniper", "start_sniper")],
                     [Button.inline("📊 Check Status", "check_status")],
                     [Button.inline("❓ FAQ", "show_faq"), Button.inline("ℹ️ About", "show_about")],
+                    [Button.inline("💰 Pricing", "show_pricing")],
                     [Button.inline("⚠️ Disclaimer", "show_disclaimer")]
                 ]
                 
@@ -756,6 +749,7 @@ async def main():
                     [Button.inline("🚀 Start Sniper", "start_sniper")],
                     [Button.inline("📊 Check Status", "check_status")],
                     [Button.inline("❓ FAQ", "show_faq"), Button.inline("ℹ️ About", "show_about")],
+                    [Button.inline("💰 Pricing", "show_pricing")],
                     [Button.inline("⚠️ Disclaimer", "show_disclaimer")]
                 ]
                 
@@ -805,7 +799,7 @@ async def main():
                     "under 300ms.\n\n"
                     
                     "**Need more help?**\n"
-                    "Contact support: @YourSupportChannel"
+                    "Contact: x.com/0xDeepSeek"
                 )
                 
                 buttons = [[Button.inline("⬅️ Back to Menu", "main_menu")]]
@@ -846,11 +840,11 @@ async def main():
                     "🔧 **Support**\n"
                     "• 24/7 technical support\n"
                     "• Regular updates\n"
-                    "• Custom feature requests\n\n"
+                    "• Custom feature requests\n"
+                    "• Direct developer access\n\n"
                     
                     "Version: 1.0.0\n"
-                    "Developer: @YourDevChannel\n"
-                    "Support: @YourSupportChannel"
+                    "Developer & Support: x.com/0xDeepSeek"
                 )
                 
                 buttons = [[Button.inline("⬅️ Back to Menu", "main_menu")]]
@@ -858,6 +852,66 @@ async def main():
                 
             except Exception as e:
                 print(f"Error in About callback: {str(e)}")
+                await event.edit("❌ An error occurred. Please try again.")
+
+        @bot.on(events.CallbackQuery(pattern=r'show_pricing'))
+        async def pricing_callback(event):
+            """Show pricing information"""
+            try:
+                pricing_text = (
+                    "💰 **Telegram Invite Sniper Pro Pricing**\n\n"
+                    
+                    "🎯 **Usage-Based Plans**\n"
+                    "Choose the duration that fits your needs:\n\n"
+                    
+                    "1️⃣ **2-Day Access**\n"
+                    "• Price: $6\n"
+                    "• Perfect for quick campaigns\n"
+                    "• Full feature access\n\n"
+                    
+                    "2️⃣ **5-Day Access**\n"
+                    "• Price: $13\n"
+                    "• Ideal for medium projects\n"
+                    "• Full feature access\n\n"
+                    
+                    "3️⃣ **10-Day Access**\n"
+                    "• Price: $20\n"
+                    "• Best for extended use\n"
+                    "• Full feature access\n\n"
+                    
+                    "4️⃣ **30-Day Access**\n"
+                    "• Price: $45\n"
+                    "• Maximum flexibility\n"
+                    "• Full feature access\n\n"
+                    
+                    "ℹ️ **Why Usage-Based Pricing?**\n"
+                    "Our bot operates on a usage-time model rather than lifetime access. "
+                    "This approach ensures:\n"
+                    "• Fair pricing based on your needs\n"
+                    "• Regular updates and maintenance\n"
+                    "• Dedicated support and monitoring\n"
+                    "• Optimal performance and reliability\n\n"
+                    
+                    "🔄 **Renewal Process**\n"
+                    "• Easy renewal before expiration\n"
+                    "• Flexible plan switching\n"
+                    "• No long-term commitment\n\n"
+                    
+                    "💫 **All Plans Include**\n"
+                    "• Ultra-fast invite detection\n"
+                    "• 24/7 operation capability\n"
+                    "• Real-time performance stats\n"
+                    "• Priority technical support\n\n"
+                    
+                    "📱 **Purchase & Support**\n"
+                    "Contact: x.com/0xDeepSeek"
+                )
+                
+                buttons = [[Button.inline("⬅️ Back to Menu", "main_menu")]]
+                await event.edit(pricing_text, buttons=buttons)
+                
+            except Exception as e:
+                print(f"Error in pricing callback: {str(e)}")
                 await event.edit("❌ An error occurred. Please try again.")
 
         @bot.on(events.CallbackQuery(pattern=r'show_disclaimer'))
