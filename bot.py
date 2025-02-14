@@ -93,11 +93,12 @@ async def send_qr_code(bot, chat_id, qr_login):
                 "2️⃣ Go to Settings > Devices\n"
                 "3️⃣ Tap 'Link Desktop Device'\n"
                 "4️⃣ Scan this QR code\n\n"
-                "⏳ Code expires in 30 seconds..."
+                "⏳ QR code valid for 1 minute\n"
+                "♻️ Will auto-refresh up to 5 times"
             ),
             parse_mode='md',
-            file_name='qr_login.png',  
-            force_document=False  
+            file_name='qr_login.png',
+            force_document=False
         )
         
         return qr_message
@@ -171,47 +172,91 @@ async def read_output(pipe, name):
             print(f"Error reading {name}: {str(e)}")
 
 async def check_qr_login(bot, chat_id, user_id, state):
-    """Check QR login status periodically"""
+    """Monitor QR login status and handle refresh"""
     try:
-        while state.waiting_for_qr_scan:
+        refresh_count = 0
+        max_refreshes = 4  # Allow up to 4 refreshes (5 minutes total)
+        
+        while state.waiting_for_qr_scan and refresh_count <= max_refreshes:
             try:
-                # Check if QR code was accepted
-                result = await state.qr_login.wait(10)  # Wait for 10 seconds
-                if result:
-                    # QR code accepted, get the session string
-                    state.session_string = state.client.session.save()
-                    print(f"QR login successful for user {user_id}")
-                    print(f"Session string length: {len(state.session_string)}")
-                    
-                    # Clear states
+                # Check login status
+                await state.qr_login.wait(20)  # Wait for 20 seconds
+                
+                if state.qr_login.success:
+                    # QR code was scanned successfully
+                    state.session_string = StringSession.save(state.client.session)
                     state.waiting_for_qr_scan = False
-                    state.waiting_for_access_code = False
                     
-                    # Update QR message
-                    await bot.edit_message(
+                    # Delete QR code message for security
+                    if state.qr_message_id:
+                        try:
+                            await bot.delete_messages(chat_id, state.qr_message_id)
+                        except Exception:
+                            pass
+                    
+                    await bot.send_message(
                         chat_id,
-                        state.qr_message_id,
-                        "✅ Login successful! Now please send me the channel username to monitor (e.g. @channel)"
+                        "✅ Login successful!\n\n"
+                        "Please enter the channel username to monitor (e.g., @example)"
                     )
                     
-                    # Set state for channel input
                     state.waiting_for_channel = True
-                    break
+                    return
                     
-            except asyncio.TimeoutError:
-                continue
             except Exception as e:
-                print(f"Error checking QR login: {str(e)}")
-                await bot.send_message(
-                    chat_id,
-                    "❌ Error during login. Please use /start to try again."
-                )
-                state.waiting_for_qr_scan = False
-                break
-                
+                if "QR code expired" in str(e) and refresh_count < max_refreshes:
+                    refresh_count += 1
+                    print(f"Refreshing QR code for user {user_id} (attempt {refresh_count})")
+                    
+                    # Generate new QR login
+                    try:
+                        state.qr_login = await state.client.qr_login()
+                        
+                        # Delete old QR message
+                        if state.qr_message_id:
+                            try:
+                                await bot.delete_messages(chat_id, state.qr_message_id)
+                            except Exception:
+                                pass
+                        
+                        # Send new QR code
+                        qr_message = await send_qr_code(bot, chat_id, state.qr_login)
+                        state.qr_message_id = qr_message.id
+                        
+                        continue
+                        
+                    except Exception as qr_error:
+                        print(f"Error refreshing QR code: {str(qr_error)}")
+                        state.waiting_for_qr_scan = False
+                        await bot.send_message(
+                            chat_id,
+                            "❌ Error refreshing QR code. Please use /start to try again."
+                        )
+                        return
+                else:
+                    print(f"QR login error: {str(e)}")
+                    state.waiting_for_qr_scan = False
+                    await bot.send_message(
+                        chat_id,
+                        "❌ QR login failed. Please use /start to try again."
+                    )
+                    return
+        
+        if state.waiting_for_qr_scan:
+            # If we reached max refreshes
+            state.waiting_for_qr_scan = False
+            await bot.send_message(
+                chat_id,
+                "❌ QR login timed out after 5 minutes. Please use /start to try again."
+            )
+            
     except Exception as e:
         print(f"Error in QR login check: {str(e)}")
         state.waiting_for_qr_scan = False
+        await bot.send_message(
+            chat_id,
+            "❌ An error occurred during login. Please use /start to try again."
+        )
 
 async def main():
     try:
