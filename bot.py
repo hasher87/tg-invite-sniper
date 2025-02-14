@@ -460,27 +460,28 @@ async def main():
         async def message_handler(event):
             """Handle user messages"""
             try:
+                # Skip command messages
                 if event.message.text.startswith('/'):
-                    return  # Skip command messages
-                    
+                    return
+            
                 user_id = event.sender_id
                 chat_id = event.chat_id
                 message = event.raw_text.strip()
-                
+        
                 if user_id not in user_states:
-                    user_states[user_id] = UserState()
-                
+                    return  # Ignore messages if user hasn't started the bot
+            
                 state = user_states[user_id]
-                
+        
                 # Only process messages if we're in a valid state
                 if state.sniper_running:
                     return  # Ignore messages if sniper is already running
-                    
+            
                 if state.waiting_for_access_code:
                     if message == ACCESS_CODE:
                         print(f"Access code verified for user {user_id}")
                         state.waiting_for_access_code = False
-                        
+                
                         # Create QR login session
                         state.client = TelegramClient(
                             StringSession(),
@@ -493,21 +494,22 @@ async def main():
                             system_lang_code="en"
                         )
                         await state.client.connect()
-                        
+                
                         # Generate QR login
                         state.qr_login = await state.client.qr_login()
                         state.waiting_for_qr_scan = True
-                        
+                
                         try:
                             # Send QR code with proper formatting
                             qr_message = await send_qr_code(bot, chat_id, state.qr_login)
                             state.qr_message_id = qr_message.id
+                    
                             print(f"QR login session created for user {user_id}")
                             print(f"QR code sent to user {user_id}")
-                            
+                    
                             # Start QR login check
                             asyncio.create_task(check_qr_login(bot, chat_id, user_id, state))
-                            
+                    
                         except Exception as e:
                             print(f"Error in QR code process: {str(e)}")
                             await bot.send_message(
@@ -515,10 +517,12 @@ async def main():
                                 "❌ Error generating QR code. Please use /start to try again."
                             )
                             state.waiting_for_qr_scan = False
-                            
+                    
                     else:
-                        await bot.send_message(chat_id, "❌ Invalid access code. Please try again.")
-                        
+                        # Only send invalid code message if we're still waiting for access code
+                        if state.waiting_for_access_code:
+                            await bot.send_message(chat_id, "❌ Invalid access code. Please try again.")
+                
                 elif state.waiting_for_channel:
                     if not message.startswith('@'):
                         await bot.send_message(
@@ -526,24 +530,24 @@ async def main():
                             "❌ Invalid channel format. Please enter a channel username starting with @"
                         )
                         return
-                        
+                
                     print(f"Processing channel input from user {user_id}")
-                    
+            
                     try:
                         # Start the sniper process with chat_id
                         state.process, state.sniper_id = await start_sniper(state.session_string, message, chat_id)
                         print(f"Sniper started for user {user_id} on channel {message}")
-                        
+                
                         await bot.send_message(
                             chat_id,
                             "✅ Sniper started successfully!\n\n" +
                             "I will now monitor the channel for invite links and automatically join them.\n\n" +
                             "You can stop the sniper at any time by sending /stop"
                         )
-                        
+                
                         state.waiting_for_channel = False
                         state.sniper_running = True
-                        
+                
                     except Exception as e:
                         print(f"Error starting sniper: {str(e)}")
                         await bot.send_message(
@@ -551,10 +555,10 @@ async def main():
                             f"❌ Error starting sniper: {str(e)}\n" +
                             "Please try again with a different channel or use /start to restart."
                         )
-                        
+                
             except Exception as e:
                 print(f"Error in message_handler: {str(e)}")
-                
+        
         @bot.on(events.CallbackQuery(pattern=r'start_sniper'))
         async def start_sniper_callback(event):
             """Handle start sniper button click"""
