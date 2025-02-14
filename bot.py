@@ -18,6 +18,7 @@ from io import BytesIO
 import base64
 from collections import OrderedDict
 import sys
+from telethon import types
 
 # Load environment variables
 load_dotenv()
@@ -80,24 +81,28 @@ async def generate_qr(url):
 async def send_qr_code(bot, chat_id, qr_login):
     """Send QR code with proper formatting"""
     try:
+        # First send instructions
+        instructions = (
+            "🔐 **Scan QR Code to Login**\n\n"
+            "1️⃣ Open Telegram on your phone\n"
+            "2️⃣ Go to Settings > Devices\n"
+            "3️⃣ Tap 'Link Desktop Device'\n"
+            "4️⃣ Scan the QR code below\n\n"
+            "⏳ QR code valid for 1 minute\n"
+            "♻️ Will auto-refresh up to 5 times"
+        )
+        await bot.send_message(chat_id, instructions, parse_mode='md')
+        
         # Generate QR code image
         qr_buffer = await generate_qr(qr_login.url)
         
-        # Send QR code with instructions
+        # Send QR code as a dedicated photo
         qr_message = await bot.send_file(
             chat_id,
             qr_buffer,
-            caption=(
-                "🔐 **Scan QR Code to Login**\n\n"
-                "1️⃣ Open Telegram on your phone\n"
-                "2️⃣ Go to Settings > Devices\n"
-                "3️⃣ Tap 'Link Desktop Device'\n"
-                "4️⃣ Scan this QR code\n\n"
-                "⏳ QR code valid for 1 minute\n"
-                "♻️ Will auto-refresh up to 5 times"
-            ),
+            caption="🔄 Telegram Login QR Code",
             parse_mode='md',
-            file_name='qr_login.png',
+            attributes=[types.DocumentAttributeFilename("telegram_login_qr.png")],
             force_document=False
         )
         
@@ -196,8 +201,9 @@ async def check_qr_login(bot, chat_id, user_id, state):
                     
                     await bot.send_message(
                         chat_id,
-                        "✅ Login successful!\n\n"
-                        "Please enter the channel username to monitor (e.g., @example)"
+                        "✅ **Login Successful!**\n\n"
+                        "Please enter the channel username to monitor (e.g., @example)",
+                        parse_mode='md'
                     )
                     
                     state.waiting_for_channel = True
@@ -219,9 +225,16 @@ async def check_qr_login(bot, chat_id, user_id, state):
                             except Exception:
                                 pass
                         
-                        # Send new QR code
+                        # Send new QR code with attempt counter
                         qr_message = await send_qr_code(bot, chat_id, state.qr_login)
                         state.qr_message_id = qr_message.id
+                        
+                        # Send refresh notification
+                        await bot.send_message(
+                            chat_id,
+                            f"♻️ QR Code refreshed (Attempt {refresh_count}/5)",
+                            parse_mode='md'
+                        )
                         
                         continue
                         
