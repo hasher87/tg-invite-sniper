@@ -82,26 +82,22 @@ async def generate_qr(url):
 async def send_qr_code(bot, chat_id, qr_login):
     """Send QR code with proper formatting"""
     try:
-        # First send instructions
-        instructions = (
-            "🔐 **Scan QR Code to Login**\n\n"
-            "1️⃣ Open Telegram on your phone\n"
-            "2️⃣ Go to Settings > Devices\n"
-            "3️⃣ Tap 'Link Desktop Device'\n"
-            "4️⃣ Scan the QR code below\n\n"
-            "⏳ QR code valid for 1 minute\n"
-            "♻️ Will auto-refresh up to 5 times"
-        )
-        await bot.send_message(chat_id, instructions, parse_mode='md')
-        
         # Generate QR code image
         qr_buffer = await generate_qr(qr_login.url)
         
-        # Send QR code as a dedicated photo
+        # Send QR code as a dedicated photo with instructions
         qr_message = await bot.send_file(
             chat_id,
             qr_buffer,
-            caption="🔄 Telegram Login QR Code",
+            caption=(
+                "🔐 **Scan QR Code to Login**\n\n"
+                "1️⃣ Open Telegram on your phone\n"
+                "2️⃣ Go to Settings > Devices\n"
+                "3️⃣ Tap 'Link Desktop Device'\n"
+                "4️⃣ Scan this QR code\n\n"
+                "⏳ QR code valid for 1 minute\n"
+                "♻️ Will auto-refresh up to 5 times"
+            ),
             parse_mode='md',
             attributes=[types.DocumentAttributeFilename("telegram_login_qr.png")],
             force_document=False
@@ -185,11 +181,16 @@ async def check_qr_login(bot, chat_id, user_id, state):
         
         while state.waiting_for_qr_scan and refresh_count <= max_refreshes:
             try:
-                # Check login status
-                await state.qr_login.wait(20)  # Wait for 20 seconds
+                # Wait for QR login response
+                try:
+                    await asyncio.wait_for(state.qr_login.wait(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    # QR code expired, need to refresh
+                    raise Exception("QR code expired")
                 
-                if state.qr_login.success:
-                    # QR code was scanned successfully
+                # Double check authorization
+                if await state.client.is_user_authorized():
+                    # Successfully logged in
                     state.session_string = StringSession.save(state.client.session)
                     state.waiting_for_qr_scan = False
                     
@@ -229,13 +230,6 @@ async def check_qr_login(bot, chat_id, user_id, state):
                         # Send new QR code with attempt counter
                         qr_message = await send_qr_code(bot, chat_id, state.qr_login)
                         state.qr_message_id = qr_message.id
-                        
-                        # Send refresh notification
-                        await bot.send_message(
-                            chat_id,
-                            f"♻️ QR Code refreshed (Attempt {refresh_count}/5)",
-                            parse_mode='md'
-                        )
                         
                         continue
                         
@@ -315,12 +309,18 @@ async def main():
                     [Button.inline("⚠️ Disclaimer", "show_disclaimer")]
                 ]
                 
-                # Delete previous messages if they exist
-                async for msg in bot.iter_messages(chat_id, from_user=bot.uid, limit=2):
-                    try:
-                        await msg.delete()
-                    except Exception:
-                        pass
+                # Clean up old messages
+                try:
+                    # Get bot's own ID
+                    bot_id = (await bot.get_me()).id
+                    # Delete recent messages from the bot
+                    async for msg in bot.iter_messages(chat_id, from_user=bot_id, limit=5):
+                        try:
+                            await msg.delete()
+                        except Exception:
+                            continue
+                except Exception as e:
+                    print(f"Error cleaning messages: {str(e)}")
                 
                 await event.respond(
                     "🤖 **Welcome to Telegram Invite Sniper Pro!**\n\n"
